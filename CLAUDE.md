@@ -32,9 +32,12 @@ has the `stratuxrun-sim` and `check-sim` targets. Work the plan milestone by mil
 | [docs/minimal-features.md](docs/minimal-features.md) | **Step 2.** Minimal feature set per device and scenario (MVP / R2 / later) |
 | [docs/protocol.md](docs/protocol.md) | **Step 3.** RB-SIM-IF v1: canonical state, wire formats, rates, numbered requirements |
 | [docs/plan.md](docs/plan.md) | **Step 3.** Milestones and self-contained task briefs, ready to execute |
+| [docs/make-or-buy.md](docs/make-or-buy.md) | Make or buy: open-source connectors (MobiFlight and others) against the wrapper |
 | [docs/rb-knowledge-base.md](docs/rb-knowledge-base.md) | What we reuse from RB-01 and RB-02, where it lives (file:line), and the gotchas |
 | [docs/wrapper.md](docs/wrapper.md) | The simulator wrapper: Go, built on Linux; Linux + Windows standalone + Windows SDK builds; layout, make targets, testing, running |
 | [docs/decisions.md](docs/decisions.md) | Decisions taken or proposed, and the open questions for the maintainer |
+| [wrapper-cs/README.md](wrapper-cs/README.md) | The C# MSFS wrapper (D19): SimConnect via P/Invoke, HTTP + WebSocket avionics status; built and tested on the Windows test machine |
+| [docs/handoff/](docs/handoff/) | Implementation instructions for the sibling repos: `rb01-roastbeef.md` (SIM hub), `rb02-rb-esp.md` (SIM firmware) |
 
 Background on the whole RB suite is in `../rbavionicswalkthrough/`. Its
 `docs/integration-map.md` is the contract table for every RB repository.

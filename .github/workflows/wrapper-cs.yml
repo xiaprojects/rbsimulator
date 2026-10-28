@@ -1,0 +1,179 @@
+# CI/CD for the C# MSFS wrapper (wrapper-cs/, decision D19).
+#
+#  test     format check, build and unit tests on Linux and Windows
+#  package  self-contained single-file rbsim-msfs.exe, smoke-tested on Windows, uploaded as an artifact
+#  release  on a tag wrapper-cs-v<version>: a GitHub release with the zip and its SHA-256
+#
+# SimConnect.dll is never built, downloaded or packaged: users install the MSFS SDK (CLAUDE.md rule 7).
+
+name: wrapper-cs
+
+on:
+  push:
+    branches: [main]
+    tags: ['wrapper-cs-v*']
+  pull_request:
+    paths:
+      - 'wrapper-cs/**'
+      - '.github/workflows/wrapper-cs.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wrapper-cs-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+  DOTNET_NOLOGO: 'true'
+  DOTNET_VERSION: '10.0.x'
+
+defaults:
+  run:
+    working-directory: wrapper-cs
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Restore
+        run: dotnet restore RbSim.Wrapper.slnx
+
+      - name: Format check
+        if: runner.os == 'Linux'
+        run: dotnet format RbSim.Wrapper.slnx --verify-no-changes --no-restore
+
+      # The executable targets win-x64; on Linux this cross-builds it, which proves the
+      # whole solution compiles on both sides.
+      - name: Build
+        run: dotnet build RbSim.Wrapper.slnx -c Release --no-restore
+
+      - name: Test
+        run: dotnet test RbSim.Wrapper.slnx -c Release --no-build --logger trx --results-directory TestResults
+
+      - name: Upload test results
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ matrix.os }}
+          path: wrapper-cs/TestResults
+          retention-days: 7
+
+  package:
+    needs: test
+    runs-on: windows-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Version
+        id: version
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF -like 'refs/tags/wrapper-cs-v*') {
+            $v = $env:GITHUB_REF_NAME.Substring('wrapper-cs-v'.Length)
+          } else {
+            $base = (dotnet msbuild src/RbSim.Msfs/RbSim.Msfs.csproj -getProperty:Version).Trim()
+            $v = "$base-ci.$env:GITHUB_RUN_NUMBER"
+          }
+          if ($v -notmatch '^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$') { throw "not a semantic version: $v" }
+          "version=$v" >> $env:GITHUB_OUTPUT
+          Write-Host "rbsim-msfs $v"
+
+      - name: Publish
+        shell: pwsh
+        run: >
+          dotnet publish src/RbSim.Msfs/RbSim.Msfs.csproj -c Release -r win-x64 --self-contained true
+          -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true
+          -p:IsTransformWebConfigDisabled=true -p:DebugType=none
+          -p:Version=${{ steps.version.outputs.version }}
+          -p:SourceRevisionId=${{ github.sha }}
+          -o out
+
+      - name: No simulator SDK binaries
+        shell: pwsh
+        run: |
+          $found = Get-ChildItem out -Recurse -Filter 'SimConnect*.dll'
+          if ($found) { throw "SimConnect binaries must never be packaged: $($found.FullName -join ', ')" }
+
+      - name: Smoke test
+        shell: pwsh
+        run: ./ci/smoke.ps1 -Exe out/rbsim-msfs.exe
+
+      - name: Package
+        id: package
+        shell: pwsh
+        run: |
+          $name = "rbsim-msfs-${{ steps.version.outputs.version }}-win-x64"
+          $stage = Join-Path $env:RUNNER_TEMP $name
+          New-Item -ItemType Directory -Path $stage | Out-Null
+          Copy-Item out/rbsim-msfs.exe, out/rbsim-msfs.example.json, README.md $stage
+          Copy-Item ../LICENSE $stage
+          $zip = Join-Path $env:RUNNER_TEMP "$name.zip"
+          Compress-Archive -Path "$stage/*" -DestinationPath $zip
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $name.zip" | Set-Content -Encoding ascii -NoNewline (Join-Path $env:RUNNER_TEMP "$name.zip.sha256")
+          "name=$name" >> $env:GITHUB_OUTPUT
+          Write-Host "$name.zip $hash"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rbsim-msfs-win-x64
+          path: |
+            ${{ runner.temp }}/${{ steps.package.outputs.name }}.zip
+            ${{ runner.temp }}/${{ steps.package.outputs.name }}.zip.sha256
+          retention-days: 30
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/wrapper-cs-v')
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: rbsim-msfs-win-x64
+          path: dist
+
+      - name: Create release
+        working-directory: dist
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.package.outputs.version }}
+        run: |
+          prerelease=""
+          case "$VERSION" in *-*) prerelease="--prerelease" ;; esac
+          cat > notes.md <<EOF
+          rbsim-msfs $VERSION for Windows x64: MSFS 2020/2024 SimConnect to RB avionics status over
+          HTTP, WebSocket and USB serial (NMEA, FLARM and RB sentences).
+
+          - Self-contained: no .NET install needed. Unzip and run \`rbsim-msfs.exe --help\`.
+          - Needs the MSFS SDK for \`SimConnect.dll\` (Developer Mode > Help > SDK Installer); it is not bundled.
+          - Copy \`rbsim-msfs.example.json\` to \`rbsim-msfs.json\` to configure the serial outputs.
+          - SIMULATOR USE ONLY. NOT FOR FLIGHT.
+
+          Built from ${GITHUB_SHA} by run ${GITHUB_RUN_ID}.
+          EOF
+          gh release create "$GITHUB_REF_NAME" ./*.zip ./*.sha256 \
+            --title "rbsim-msfs $VERSION" --notes-file notes.md --verify-tag $prerelease

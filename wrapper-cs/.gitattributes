@@ -1,0 +1,5 @@
+# LF in the working tree on every OS, whatever core.autocrlf says, so the format check
+# gives the same answer on the Windows test machine and the Linux CI runner.
+* text=auto eol=lf
+*.png binary
+*.ico binary

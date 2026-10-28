@@ -6,6 +6,80 @@ link the replacement.
 
 ## Decisions
 
+### D20 — Radio and control write API in the C# wrapper, local-only by default (accepted, 2026-10-28)
+- **Request** (maintainer, test-machine session): add an API for radio/comm and actuator
+  management to the C# wrapper (D19).
+- **Shape:**
+  - `GET /api/radio` reads COM1/2, NAV1/2 and the transponder.
+  - `GET` and `POST /api/control`, plus `{"control": …}` over the WebSocket, write a
+    whitelist of controls: radios, transponder, autopilot modes and targets, the sim
+    altimeter, flaps, trim, gear and parking brake.
+  - The actuator table and the read-back state machine are pure code in `RbSim.Core`
+    (`Actuators`, `ActuatorManager`), unit-tested and shared by the MSFS and synthetic
+    sources.
+  - See [wrapper-cs/README.md](../wrapper-cs/README.md#radio-and-control-api).
+- **Rules carried over:**
+  - explicit-state events only (D15, MSF-090); radio swaps become two explicit sets;
+  - writes only when the read-back differs, at most 2 Hz per control (§5);
+  - every write is verified by read-back within 2 s: `mismatch` is reported and never
+    retried (MSF-100);
+  - an event the sim doesn't know makes only its own control `unsupported` (as MSF-130
+    does for datums).
+- **Access:**
+  - Reads stay open to the LAN.
+  - Writes are limited to this PC unless `control.allow_remote` is set. They need
+    `application/json` and refuse a foreign `Origin`, so a web page can't drive the
+    simulator through localhost.
+  - Writes can be switched off (`--no-control`) or limited by group.
+- **Not RB-SIM-IF:** this API is the wrapper's own, for the instructor page, tools and tests.
+  RB-01's autopilot intents still arrive in the `/sim/state` response, and T5.1 coupling
+  (`off|bug|full`, default `off`) will drive the same actuator layer. COM sync with the
+  RB-01 radio plate stays R2 (protocol §5).
+- **Unverified:** every event and read-back unit against live MSFS (L1, L7), listed in
+  the README.
+
+### D19 — A C# MSFS wrapper on the Windows test machine, serving avionics status over HTTP and WebSocket (accepted, 2026-10-28)
+- **Request** (maintainer, in the test-machine session): code the MSFS wrapper in C#. It
+  starts with SimConnect and a web service plus WebSocket that clients poll for the
+  avionics status. A direct USB link to RB-02 follows (GPS NMEA plus the RB sentences).
+- **Shape:** `wrapper-cs/` holds the .NET 10 solution: `RbSim.Core` (pure), the
+  `rbsim-msfs.exe` program, and xunit tests. See [wrapper-cs/README.md](../wrapper-cs/README.md).
+- **Transport:** P/Invoke to the native `SimConnect.dll`, loaded at run time in the §3.1
+  discovery order. It doesn't use the managed SDK assembly, so the build needs no SDK and
+  never bundles the DLL (Q14).
+- **Contract:** the HTTP and WebSocket payloads are the RB-SIM-IF/1 state and traffic
+  messages, unchanged (IF-090). One sender's output can therefore later be POSTed to an
+  RB-01 hub, or turned into the device lines of §4.4.
+- **Relation to D17 and D18:** this is still a make (D18), but it narrows D17 for MSFS on
+  Windows. Still open with the maintainer: whether the Go wrapper keeps the Linux/Pi and
+  standalone pure-protocol builds, or C# replaces it. Until then, plan tasks T2.x describe
+  the Go layout. The C# wrapper implements the same mapping tables (protocol §3.1) and the
+  same golden values.
+- **Consequence:** the C# code is developed on the Windows test machine.
+- **CI** (`.github/workflows/wrapper-cs.yml`, 2026-10-28):
+  - GitHub Actions builds and tests it on both Linux and Windows, then publishes and
+    smoke-tests the self-contained `rbsim-msfs.exe` on Windows;
+  - a `wrapper-cs-v*` tag turns that build into a release.
+  - The "test machine runs CI binaries" rule of CLAUDE.md therefore applies to the CI zip.
+    The Linux box can also run the core tests with a .NET 10 SDK.
+
+### D18 — Make the wrapper; adopt open-source connectors only around it (proposed, 2026-10-28)
+- **Question:** could MobiFlight Connector or another free and open-source connector
+  replace the wrapper? The analysis is in [make-or-buy.md](make-or-buy.md).
+- **Answer: no, the wrapper is a make.** No connector streams a validated whole state to a
+  hub over RB-SIM-IF/1 (D16), and none runs on Linux and the Pi as a single binary
+  (D17). MobiFlight works output by output to USB boards, on Windows only.
+- **Adopt around it:**
+  - MobiFlight Connector **side by side** for switches and knobs (no work);
+  - the **MobiFlight WASM module** (MIT), optional, for LVars on complex aircraft (R2);
+  - **ForeFlight-UDP producers** such as fs2ff (Unlicense) through the T5 adapter, as a
+    degraded zero-install path;
+  - MIT Go SimConnect bindings as a **reference** for T2.3, not a dependency.
+- **Evaluate later, STOP:** RB-02 answering MobiFlight's board protocol in a SIM build, for
+  builders without an RB-01. It touches rb-esp and the product scope.
+- **Still rejected:** GPL, AGPL or NOSA code (Little Navconnect, ExtPlane, XPlaneConnect,
+  Python-SimConnect) can't go into the commercial edition (D9).
+
 ### D17 — The wrapper is a Go program cross-compiled from Linux, in an SDK build and a standalone build (proposed, 2026-10-26)
 - **Request** (maintainer): the wrapper is developed under Linux and also runs on Windows.
   On Windows it comes in two builds: with the MS Flight Simulator SDK, and standalone.

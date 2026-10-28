@@ -1,0 +1,63 @@
+// rbsim-msfs configuration. Copy to rbsim-msfs.json (current folder or beside rbsim-msfs.exe),
+// or pass --config PATH. Comments and trailing commas are allowed; unknown keys are an error.
+// Command-line options override these values.
+{
+  "source": "msfs",               // msfs | synthetic
+  "listen": "0.0.0.0",            // 127.0.0.1 keeps the web service on this PC
+  "port": 8090,
+  // "simconnect_dll": "C:\\MSFS SDK\\SimConnect SDK\\lib\\SimConnect.dll",
+  "frame_skip": 0,
+  "max_rate_hz": 30,
+  "traffic_radius_m": 37040,
+
+  "aircraft": {
+    "ball_full_scale_deg": 10,    // placeholder: verify per aircraft
+    "cht_spread_c": [0, 0, 0, 0],
+    "egt_spread_c": [0, 0, 0, 0]
+  },
+
+  "ems": {
+    "manifold_pressure": "inhg",  // inhg | psi | bar, as in the aircraft's ems.json
+    "oil_pressure": "bar",
+    "fuel_pressure": "bar",       // $RBEMS only
+    "fuel": "l"                   // l | gal
+  },
+
+  // Writes to the simulator through POST /api/control and the WebSocket: radios, autopilot,
+  // the sim altimeter and cockpit controls. Each write is checked by read-back within 2 s.
+  "control": {
+    "enabled": true,
+    "allow_remote": false,        // true lets other computers (an RB-01, a tablet) send commands
+    "groups": ["radio", "autopilot", "altimeter", "controls"]
+  },
+
+  // USB devices connected directly to this PC. Find the COM port with: rbsim-msfs --list-ports
+  // Profiles (protocol §4.4):
+  //   nmea-flarm  $GPRMC+$GPGGA 5 Hz, $PFLAU+$PFLAA 1 Hz   (today's USB NMEA / FLARM firmware)
+  //   rb02        $RBATT 20 Hz, $RBADC 10 Hz, $GPRMC+$GPGGA 5 Hz (needs a SIM firmware build)
+  //   rb05        $GPRMC, $PFLAU, $PFLAA 1 Hz
+  //   rb04        $RBEMS 5 Hz, $RBCYL every 2 s           (RB-04 EMS-USB firmware)
+  //   rb07        rb02 + rb05
+  // "rates" overrides a sentence rate in Hz (gprmc, gpgga, pflau, pflaa, rbatt, rbadc, rbems, rbcyl); 0 removes it.
+  // A port "file:capture.nmea" writes the same lines to a file instead.
+  "serial": [
+    {
+      "name": "RB-02 panel",
+      "enabled": true,
+      "port": "COM5",
+      "profile": "nmea-flarm",
+      "baud": 115200,             // irrelevant for the ESP32-S3 USB console
+      "max_traffic": 10,          // RB-05 holds at most 10 targets
+      "dtr": false,               // ESP32 auto-reset reacts to DTR/RTS: keep off unless needed
+      "rts": false,
+      "log_device_output": true
+    },
+    {
+      "name": "capture",
+      "enabled": false,
+      "port": "file:capture.nmea",
+      "profile": "rb07",
+      "rates": { "rbatt": 10 }
+    }
+  ]
+}

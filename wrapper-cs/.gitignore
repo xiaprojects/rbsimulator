@@ -1,0 +1,7 @@
+bin/
+obj/
+TestResults/
+.vs/
+*.user
+# Never commit simulator SDK binaries (CLAUDE.md ground rule 7)
+SimConnect.dll

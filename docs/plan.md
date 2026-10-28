@@ -267,6 +267,8 @@ the ESP32 devices. Done already (D10): the `stratuxrun-sim` and `check-sim` targ
 
 ### T3.1 Investigate the RB-01 sim input, then STOP
 - **Repo:** roastbeef, read only. **Covers:** groundwork for SAF-010, RB1-*.
+- **Handoff:** [handoff/rb01-roastbeef.md](handoff/rb01-roastbeef.md) holds the evidence
+  gathered from GitHub (2026-10-28) and the proposed design for T3.1–T3.2.
 - **Read first:** roastbeef AGENTS.md; `docs/certification/fha.md` and
   `standards/requirements.md` (what is certified core); [rb-knowledge-base.md](rb-knowledge-base.md)
   §RB-01.
@@ -367,6 +369,8 @@ the ESP32 devices. Done already (D10): the `stratuxrun-sim` and `check-sim` targ
 
 ### T4.1 Firmware sim parser (rb-esp, host-tested)
 - **Repo:** rb-esp. **Covers:** ESP-020, ESP-030, ESP-040, ESP-050, SAF-020.
+- **Handoff:** [handoff/rb02-rb-esp.md](handoff/rb02-rb-esp.md) holds the evidence gathered
+  from GitHub (2026-10-28), the wiring proposal for T4.2, and the bench checklist.
 - **Read first:** rb-esp CLAUDE.md **all of it**: CRLF, never `git add -A`, the `#error`
   guard, the `BuildMachine.h` backup, no stdlib parsing. Also `test/host/README.md`,
   `main/RB/RB_Usb.c`, `RB04_NMEA_Parser.c` (the `parse_int_token` pattern), and

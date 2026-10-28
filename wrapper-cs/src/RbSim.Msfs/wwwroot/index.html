@@ -1,0 +1,183 @@
+<!doctype html>
+<!--
+This file is part of RB.
+
+Copyright (C) 2026 XIAPROJECTS SRL
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as published
+by the Free Software Foundation, version 3.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+This source is part of the project RB: RB Simulator
+(github.com/xiaprojects/rbsimulator).
+
+Community edition will be free for all builders and personal use as defined by the licensing model
+Dual licensing for commercial agreement is available
+Please join Discord community
+
+index.html: live status page of rbsim-msfs, fed by /ws, /api/status, /api/radio and /api/control.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RB Sim Wrapper</title>
+<style>
+  :root { --bg: #0e1116; --card: #171b22; --fg: #e6e6e6; --dim: #8b949e; --ok: #3fb950; --bad: #f85149; --warn: #d29922; }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg); font: 14px/1.4 system-ui, sans-serif; }
+  header { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; margin-bottom: 16px; }
+  h1 { font-size: 18px; margin: 0; }
+  .sim { background: var(--warn); color: #000; font-weight: 700; padding: 2px 8px; border-radius: 4px; }
+  .pill { padding: 2px 8px; border-radius: 10px; background: var(--card); }
+  .ok { color: var(--ok); } .bad { color: var(--bad); } .dim { color: var(--dim); }
+  main { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+  section { background: var(--card); border-radius: 8px; padding: 12px; min-width: 0; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; margin: 0 0 8px; display: flex; justify-content: space-between; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  td { padding: 1px 0; overflow-wrap: anywhere; } td:last-child { text-align: right; }
+  .inop { color: var(--bad); font-weight: 700; }
+</style>
+</head>
+<body>
+<header>
+  <span class="sim">SIM</span>
+  <h1>RB Simulator wrapper</h1>
+  <span class="pill" id="link">connecting…</span>
+  <span class="pill dim" id="sim"></span>
+</header>
+<main id="groups"></main>
+<script>
+  const GROUPS = ["gps", "ahrs", "baro", "airspeed", "ems", "ap", "radio", "control", "traffic", "status"];
+  const main = document.getElementById("groups");
+  const cards = {};
+  for (const g of GROUPS) {
+    const s = document.createElement("section");
+    s.innerHTML = `<h2><span>${g}</span><span class="state dim"></span></h2><table></table>`;
+    main.appendChild(s);
+    cards[g] = s;
+  }
+
+  function render(g, obj, fresh) {
+    const card = cards[g];
+    const state = card.querySelector(".state");
+    const table = card.querySelector("table");
+    if (obj === null || obj === undefined) {
+      state.textContent = "INOP"; state.className = "state inop";
+      table.innerHTML = "";
+      return;
+    }
+    state.textContent = fresh ?? ""; state.className = "state dim";
+    table.innerHTML = "";
+    for (const [k, v] of Object.entries(obj)) {
+      const tr = table.insertRow();
+      tr.insertCell().textContent = k;
+      tr.insertCell().textContent = typeof v === "object" && v !== null ? JSON.stringify(v) : String(v);
+    }
+  }
+
+  function connect() {
+    const ws = new WebSocket(`ws://${location.host}/ws?rate=10`);
+    const link = document.getElementById("link");
+    ws.onmessage = (e) => {
+      const m = JSON.parse(e.data);
+      if (m.targets) {
+        const t = {};
+        for (const x of m.targets) t[x.Tail || x.Icao_addr.toString(16)] = `${x.Alt ?? "?"} ft ${x.Speed ?? "?"} kt`;
+        render("traffic", t, `${m.targets.length}`);
+        return;
+      }
+      for (const g of ["gps", "ahrs", "baro", "airspeed"]) render(g, m[g]);
+      render("ems", m.ems ?? null);
+      render("ap", m.ap ?? null);
+      link.textContent = m.paused ? "FROZEN (paused)" : `seq ${m.seq}`;
+      link.className = "pill " + (m.paused ? "dim" : "ok");
+      if (m.sim) document.getElementById("sim").textContent = `${m.sim.name} ${m.sim.version} · ${m.sim.aircraft}`;
+    };
+    ws.onclose = () => { link.textContent = "wrapper offline"; link.className = "pill bad"; setTimeout(connect, 2000); };
+  }
+
+  async function pollStatus() {
+    try {
+      const s = await (await fetch("/api/status")).json();
+      render("status", {
+        connected: s.connected, paused: s.paused, "frames Hz": s.rate_hz.frames, "state Hz": s.rate_hz.state,
+        dll: s.simconnect.dll, "pause flags": s.simconnect.pause_flags, rejected: s.simconnect.rejected_datums.join(", ") || "none",
+        "last exception": s.simconnect.last_exception ?? "none", "last error": s.last_error ?? "none", wrapper: s.wrapper,
+        config: s.config ?? "none",
+        serial: s.serial.map(x => `${x.name} (${x.port}, ${x.profile}): ${x.open ? x.lines_per_s + " lines/s" : "closed, " + (x.last_error ?? "")}`).join("; ") || "none",
+      }, s.connected ? "connected" : "disconnected");
+    } catch { render("status", null); }
+  }
+
+  // Radio and control: read-back with each command's verification status, and a send form.
+  const ctlCard = cards.control;
+  ctlCard.insertAdjacentHTML("beforeend",
+    `<form id="ctl" style="display:flex;gap:6px;margin-top:8px">
+       <select id="ctl-name" style="flex:1;min-width:0"></select>
+       <input id="ctl-value" placeholder="value" style="width:90px">
+       <button>Send</button></form>
+     <div id="ctl-msg" class="dim" style="margin-top:4px;overflow-wrap:anywhere"></div>`);
+  const SWAPS = ["com1_swap", "com2_swap", "nav1_swap", "nav2_swap"];
+  let ctlNames = "";
+
+  async function pollControl() {
+    try {
+      const r = await (await fetch("/api/radio")).json();
+      const f = (p) => `${p.active_mhz ?? "—"} / ${p.standby_mhz ?? "—"}`;
+      render("radio", {
+        "COM1 act/stby": f(r.com1), "COM2 act/stby": f(r.com2), "NAV1 act/stby": f(r.nav1), "NAV2 act/stby": f(r.nav2),
+        "NAV1 radial": r.nav1.has_nav ? r.nav1.radial_deg : "no signal",
+        XPDR: `${r.xpdr.code ?? "—"} ${r.xpdr.state ?? ""}${r.xpdr.ident ? " IDENT" : ""}`,
+      }, r.valid ? "" : "no read-back");
+
+      const c = await (await fetch("/api/control")).json();
+      const rows = {};
+      for (const [k, a] of Object.entries(c.actuators)) {
+        if (!a.allowed) continue;
+        const cmd = a.command ? ` · ${a.command.status}${a.command.detail ? " (" + a.command.detail + ")" : ""}` : "";
+        rows[k] = `${a.read_back ?? "—"}${a.supported ? "" : " unsupported"}${cmd}`;
+      }
+      render("control", rows, !c.enabled ? "disabled" : c.allow_remote ? "LAN" : "this PC only");
+      const names = [...Object.keys(rows), ...SWAPS].join();
+      if (names !== ctlNames) {
+        ctlNames = names;
+        document.getElementById("ctl-name").innerHTML = names.split(",").map(n => `<option>${n}</option>`).join("");
+      }
+    } catch { render("radio", null); }
+  }
+
+  document.getElementById("ctl").onsubmit = async (e) => {
+    e.preventDefault();
+    const name = document.getElementById("ctl-name").value;
+    const raw = document.getElementById("ctl-value").value.trim();
+    // true/false and numbers as JSON; a squawk stays a string so "0400" keeps its digits
+    let value = SWAPS.includes(name) ? true
+      : raw === "true" || raw === "false" ? raw === "true"
+      : name === "xpdr_code" ? raw : Number(raw);
+    const msg = document.getElementById("ctl-msg");
+    try {
+      const res = await fetch("/api/control", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ [name]: value }) });
+      const body = await res.json();
+      msg.textContent = body.ok ? "sent: " + JSON.stringify(body.accepted) : body.errors.join("; ");
+      msg.className = body.ok ? "ok" : "bad";
+    } catch (err) { msg.textContent = String(err); msg.className = "bad"; }
+    pollControl();
+  };
+
+  connect();
+  pollStatus();
+  setInterval(pollStatus, 1000);
+  pollControl();
+  setInterval(pollControl, 1000);
+</script>
+</body>
+</html>

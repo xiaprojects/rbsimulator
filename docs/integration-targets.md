@@ -194,6 +194,9 @@ anything ships to a school.
 
 ## Middleware considered and not used
 
+The full make-or-buy comparison of free and open-source connectors (MobiFlight, node-simconnect,
+fs2ff, the Go bindings and others) is in [make-or-buy.md](make-or-buy.md) (decision D18).
+
 | Tool | Why not |
 |---|---|
 | FSUIPC7 | paid, Windows-only, a licence per seat for schools; it wraps SimConnect, which we call directly |

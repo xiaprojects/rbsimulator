@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/RbSim.Core/RbSim.Core.csproj" />
+    <Project Path="src/RbSim.Msfs/RbSim.Msfs.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/RbSim.Core.Tests/RbSim.Core.Tests.csproj" />
+  </Folder>
+</Solution>
