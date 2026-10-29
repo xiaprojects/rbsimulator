@@ -36,7 +36,7 @@ has the `stratuxrun-sim` and `check-sim` targets. Work the plan milestone by mil
 | [docs/rb-knowledge-base.md](docs/rb-knowledge-base.md) | What we reuse from RB-01 and RB-02, where it lives (file:line), and the gotchas |
 | [docs/wrapper.md](docs/wrapper.md) | The simulator wrapper: Go, built on Linux; Linux + Windows standalone + Windows SDK builds; layout, make targets, testing, running |
 | [docs/decisions.md](docs/decisions.md) | Decisions taken or proposed, and the open questions for the maintainer |
-| [wrapper-cs/README.md](wrapper-cs/README.md) | The C# MSFS wrapper (D19): SimConnect via P/Invoke, HTTP + WebSocket avionics status; built and tested on the Windows test machine |
+| [wrapper-cs/README.md](wrapper-cs/README.md) | The C# MSFS wrapper (D19): SimConnect via P/Invoke, HTTP + WebSocket avionics status. MSFS needs the Windows build (test machine); the Linux build (D21) runs the synthetic source, serial outputs and the RB-01 HMI at `/RB-01/`. No .NET SDK is installed on this box |
 | [docs/handoff/](docs/handoff/) | Implementation instructions for the sibling repos: `rb01-roastbeef.md` (SIM hub), `rb02-rb-esp.md` (SIM firmware) |
 
 Background on the whole RB suite is in `../rbavionicswalkthrough/`. Its

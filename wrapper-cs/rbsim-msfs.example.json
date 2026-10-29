@@ -2,13 +2,16 @@
 // or pass --config PATH. Comments and trailing commas are allowed; unknown keys are an error.
 // Command-line options override these values.
 {
-  "source": "msfs",               // msfs | synthetic
+  "source": "msfs",               // msfs (Windows only) | synthetic
   "listen": "0.0.0.0",            // 127.0.0.1 keeps the web service on this PC
   "port": 8090,
   // "simconnect_dll": "C:\\MSFS SDK\\SimConnect SDK\\lib\\SimConnect.dll",
   "frame_skip": 0,
   "max_rate_hz": 30,
   "traffic_radius_m": 37040,
+  // RB-01 HMI files served at /RB-01/, e.g. a roastbeef working tree, so an edit shows on the next
+  // reload. A relative path is relative to the current folder. The folder must exist.
+  // "rb01_web_dir": "/home/stefano/roastbeef/web/RB-01",
 
   "aircraft": {
     "ball_full_scale_deg": 10,    // placeholder: verify per aircraft

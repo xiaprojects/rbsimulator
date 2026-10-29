@@ -1,5 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk.Web">
-  <!-- rbsim-msfs: MSFS SimConnect source with the HTTP/WebSocket status server. Windows x64 only. -->
+  <!-- rbsim-msfs: MSFS SimConnect source with the HTTP/WebSocket status server.
+       win-x64: every source. linux-x64 / linux-arm64: synthetic source, serial outputs and the
+       RB-01 HMI; the msfs source needs Windows (SimConnect.dll). -->
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
@@ -8,15 +10,21 @@
     <AssemblyName>rbsim-msfs</AssemblyName>
     <RootNamespace>RbSim.Msfs</RootNamespace>
     <Version>0.1.0</Version>
-    <!-- SimConnect.dll is native x64; never AnyCPU. -->
-    <PlatformTarget>x64</PlatformTarget>
-    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <!-- The host's build unless -r says otherwise: win-x64 on Windows, linux-x64 elsewhere. -->
+    <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == '' and '$(OS)' == 'Windows_NT'">win-x64</RuntimeIdentifier>
+    <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''">linux-x64</RuntimeIdentifier>
+    <!-- SimConnect.dll is native x64; never AnyCPU on Windows. Other RIDs take their own architecture. -->
+    <PlatformTarget Condition="$(RuntimeIdentifier.StartsWith('win'))">x64</PlatformTarget>
     <SelfContained>false</SelfContained>
     <InvariantGlobalization>true</InvariantGlobalization>
   </PropertyGroup>
   <ItemGroup>
     <Content Remove="wwwroot\**" />
     <EmbeddedResource Include="wwwroot\index.html" LogicalName="RbSim.Msfs.wwwroot.index.html" />
+    <!-- The rest of wwwroot is the RB-01 HMI's shared files (roastbeef web/: css, js, img, plates,
+         settings, synthview), served at the root from wwwroot beside the exe. Not in the single file. -->
+    <None Remove="wwwroot\**" />
+    <None Include="wwwroot\**" Exclude="wwwroot\index.html" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\RbSim.Core\RbSim.Core.csproj" />

@@ -8,12 +8,16 @@ units, and `null` for an invalid group.
 Later outputs go through the same `SimState`: a direct USB serial link to RB-02 (GPS NMEA
 plus the RB sentences of protocol §4.4), and POSTing to an RB-01 hub.
 
+It builds for Windows x64 and Linux (x64, arm64). On Linux the msfs source isn't
+available, because `SimConnect.dll` exists only on Windows. Everything else works there:
+the synthetic source, the API, the serial outputs, and the RB-01 HMI at `/RB-01/`.
+
 ## Layout
 
 | Path | What |
 |---|---|
 | `src/RbSim.Core/` | pure, no I/O: `SimState` (SI), `Units`, `MsfsMap` (SimVar → SimState, signs), `MsfsDetectors` (pause, link, teleport), `DataLayout` (SimConnect block decoding), `RbSimIf` (contract messages), `Nmea`/`DeviceLines` (serial sentences), `Actuators`/`ActuatorManager` (writable controls, key events, read-back) |
-| `src/RbSim.Msfs/` | the `rbsim-msfs.exe` program: P/Invoke to `SimConnect.dll` (`SimConnectNative`, `MsfsSource`), `SyntheticSource`, the Kestrel HTTP/WebSocket server (`Program.cs`), the live page `wwwroot/index.html` |
+| `src/RbSim.Msfs/` | the `rbsim-msfs` program (`rbsim-msfs.exe` on Windows): P/Invoke to `SimConnect.dll` (`SimConnectNative`, `MsfsSource`), `SyntheticSource`, the Kestrel HTTP/WebSocket server (`Program.cs`), the live page `wwwroot/index.html` |
 | `tests/RbSim.Core.Tests/` | xunit tests on the core, tagged `// Covers: RB-SIM-…` |
 
 SimConnect is called through P/Invoke on the **native** `SimConnect.dll`, not through the
@@ -26,15 +30,40 @@ managed `Microsoft.FlightSimulator.SimConnect.dll`:
 
 ## Build, test, run
 
-Needs the .NET 10 SDK, Windows x64.
+Needs the .NET 10 SDK. A plain build targets the host: win-x64 on Windows, linux-x64
+elsewhere. `-r` picks another target.
 
 ```powershell
 cd wrapper-cs
 dotnet test RbSim.Wrapper.slnx
 dotnet run --project src/RbSim.Msfs -- --source synthetic     # no simulator needed
-dotnet run --project src/RbSim.Msfs                           # MSFS through SimConnect
+dotnet run --project src/RbSim.Msfs                           # MSFS through SimConnect (Windows)
 dotnet publish src/RbSim.Msfs -c Release -o out               # out\rbsim-msfs.exe
 ```
+
+On Linux:
+
+```sh
+cd wrapper-cs
+dotnet test RbSim.Wrapper.slnx
+dotnet run --project src/RbSim.Msfs -- --source synthetic --rb01-web-dir ../../roastbeef/web/RB-01
+dotnet publish src/RbSim.Msfs/RbSim.Msfs.csproj -c Release -r linux-x64 --self-contained true \
+  -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -p:DebugType=none -o out-linux
+./out-linux/rbsim-msfs --source synthetic --serial /dev/ttyACM0=rb02
+```
+
+- **`--source msfs` is refused on Linux** with exit code 2, instead of retrying a DLL that
+  can never load. The default source is still `msfs`, so set `"source": "synthetic"` in
+  the configuration or pass `--source synthetic`.
+- **Keep `libSystem.IO.Ports.Native.so` beside `rbsim-msfs`.** It is the native half of
+  the serial port, and single-file publishing leaves it outside the executable. Without
+  it, every serial output reports the load error in `/api/status` and retries every 2 s.
+  The web service keeps running.
+- **Serial ports** are `/dev/ttyACM0` (the ESP32-S3 USB console) or `/dev/ttyUSB0`. The
+  user needs to be in the `dialout` group. `--list-ports` lists them.
+- **linux-arm64** (the Pi) builds the same way with `-r linux-arm64`. It is not packaged
+  by CI.
+- **win-arm64 is refused at build time** (NETSDK1032), because `SimConnect.dll` is x64.
 
 The page is at http://localhost:8090/. `--help` lists the options. The default bind is
 `0.0.0.0:8090`, so devices on the LAN can poll it. Windows asks once for a firewall rule:
@@ -42,6 +71,9 @@ allow it on **private** networks only. Use `--listen 127.0.0.1` to keep the wrap
 
 | Endpoint | Content |
 |---|---|
+| `GET /RB-01/` | the RB-01 HMI files from `rb01_web_dir`, when set ([below](#rb-01-hmi-at-rb-01)) |
+| `WS /situation`, `/traffic`, `/radar`, `/ems`, `/status` | the RB-01 daemon's HMI sockets, in its frame shapes ([below](#the-hmi-sockets-d22)) |
+| `GET /addons`, `/radio`, `/playback`, `/updates/available`; `GET`/`POST /bridge/float`, `WS /bridge/float/ws` | the HMI's REST calls and the addons bridge ([below](#the-hmis-rest-calls-d23)) |
 | `GET /api/state` | RB-SIM-IF/1 state message, the body of `POST /sim/state` |
 | `GET /api/traffic` | RB-SIM-IF/1 traffic message |
 | `GET /api/simstate` | canonical `SimState`, SI, snake_case |
@@ -58,9 +90,9 @@ push to `main`, on pull requests that touch `wrapper-cs/`, and on demand.
 
 | Job | Runner | What it does |
 |---|---|---|
-| `test` | Ubuntu + Windows | `dotnet format --verify-no-changes` (Linux), Release build of the whole solution (it cross-builds the win-x64 exe on Linux), unit tests |
-| `package` | Windows | self-contained single-file `rbsim-msfs.exe` (no .NET install needed, about 50 MB); fails if any `SimConnect*.dll` is in the output; runs [ci/smoke.ps1](ci/smoke.ps1) against the exe; uploads `rbsim-msfs-<version>-win-x64.zip` + `.sha256` as the `rbsim-msfs-win-x64` artifact |
-| `release` | Ubuntu | only for a tag `wrapper-cs-v<semver>`: creates the GitHub release with the zip and checksum. A version containing `-` is marked pre-release |
+| `test` | Ubuntu + Windows | `dotnet format --verify-no-changes` (Linux), Release build of the whole solution for the runner's OS, unit tests |
+| `package` | Windows (win-x64) + Ubuntu (linux-x64) | self-contained single-file `rbsim-msfs.exe` / `rbsim-msfs` (no .NET install needed, about 50 MB); fails if any `SimConnect*.dll` is in the output; runs [ci/smoke.ps1](ci/smoke.ps1) against it on its own OS; uploads `rbsim-msfs-<version>-win-x64.zip` and `rbsim-msfs-<version>-linux-x64.tar.gz` (with `libSystem.IO.Ports.Native.so`), each with a `.sha256`, as the artifacts `rbsim-msfs-win-x64` and `rbsim-msfs-linux-x64` |
+| `release` | Ubuntu | only for a tag `wrapper-cs-v<semver>`: creates the GitHub release with both archives and checksums. A version containing `-` is marked pre-release |
 
 Versions:
 
@@ -89,6 +121,8 @@ dotnet publish src/RbSim.Msfs/RbSim.Msfs.csproj -c Release -r win-x64 --self-con
 ./ci/smoke.ps1 -Exe out/rbsim-msfs.exe
 ```
 
+On Linux, publish with `-r linux-x64` and run `pwsh ci/smoke.ps1 -Exe out/rbsim-msfs`.
+
 Line endings are LF on every OS (`.gitattributes`, `.editorconfig`), so the format check
 gives the same answer here and on the Linux runner.
 
@@ -97,11 +131,12 @@ gives the same answer here and on the Linux runner.
 Copy [rbsim-msfs.example.json](rbsim-msfs.example.json) to `rbsim-msfs.json`, in the
 current folder or beside the executable, or pass `--config PATH`. Command-line options
 override the file. Comments and trailing commas are allowed. An unknown key is an error, so
-a misspelt setting is never silently ignored.
+a misspelt setting is never silently ignored. `rbsim-msfs.json` is git-ignored, because
+ports and folders differ per machine.
 
 Each entry in `serial` feeds one directly connected RB device with the protocol §4.4
 device lines: GPS NMEA, FLARM, and the RB sentences. `rbsim-msfs --list-ports` lists the
-COM ports.
+COM ports, or `/dev/tty*` on Linux.
 
 | Profile | Lines | Works with |
 |---|---|---|
@@ -163,6 +198,130 @@ Still unverified:
 - Whether the ESP32-S3 USB console needs DTR asserted. Both control lines default off
   because of the auto-reset circuit.
 - Behaviour on a real device: no RB device is connected to this PC.
+
+## RB-01 HMI at /RB-01
+
+`rb01_web_dir` in the configuration, or `--rb01-web-dir PATH`, serves an RB-01 HMI folder
+at `/RB-01/`. Typically that is a roastbeef working tree's `web/RB-01`, for example
+`/home/stefano/roastbeef/web/RB-01`.
+
+- **Path.** A relative path is relative to the current folder. A folder that doesn't
+  exist is an error at startup (exit code 2), never a silent 404.
+- **Reload.** Files are sent with `Cache-Control: no-cache`, so the browser revalidates
+  them and an edit in the working tree shows on the next reload.
+- **What is served.** `/RB-01` redirects to `/RB-01/`, which serves `index.html`. Dotfiles
+  are never served, and nothing outside the folder can be reached.
+- **Status.** `/api/status` reports the folder in use as `rb01_web_dir`.
+
+The HMI also loads files from roastbeef's `web/` root: `/css`, `/js`, `/img`, `/plates`,
+`/settings` and `/synthview`. Copies of those folders live in `src/RbSim.Msfs/wwwroot/`.
+The build copies them beside the executable as `wwwroot/`, and the wrapper serves them at
+the root, with `no-cache`.
+
+- **Not inside the single file.** A user can edit or replace them in place.
+- **`.glb` models** are served as `model/gltf-binary`.
+- **The status page is separate.** `wwwroot/index.html` is the wrapper's own page. It is
+  embedded and served at `/`, and never copied there.
+- **It is a copy.** Refresh it from roastbeef's `web/` when the HMI changes.
+- **Never commit a real flight record.** `settings/hobbsmeter.json` came over with the
+  copy and is git-ignored (CLAUDE.md rule 6).
+
+### The HMI sockets (D22)
+
+The wrapper serves the RB-01 daemon's HMI WebSockets, so the HMI runs on the wrapper's
+data. The frames have the daemon's shapes (roastbeef `main/managementinterface.go`). They
+are built by `Rb01Hmi` from the same state message as `/api/state`, as an RB-01 hub would
+after `POST /sim/state`.
+
+| Socket | Frame | Rate |
+|---|---|---|
+| `/situation` | `SituationData` | 10 Hz |
+| `/traffic` | one `TrafficInfo` per target fresher than 10 s, nearest first | 1 Hz |
+| `/radar` | the daemon's radar settings (`RadarLimits` 2000, `RadarRange` 10), then as `/traffic` | 1 Hz |
+| `/ems` | the EMS map: every key of the contract's `ems` group, in `ems.json` units | 2 Hz |
+| `/status` | the `globalStatus` fields the HMI reads; `Version` ends in `-SIM` | 1 Hz |
+| `/bridge/float/ws` | the addons bridge map, when it changes ([below](#the-hmis-rest-calls-d23)) | checked at 5 Hz |
+| `/autopilot`, `/keypad`, `/alerts`, `/radioStatus`, `/gdl90`, `/weather` | none: accepted and quiet, as the daemon's are while nothing happens | — |
+
+A plain HTTP request to one of these paths gets 404.
+
+**Stale data never looks valid** (RB-SIM-SAF-050). The HMI believes every frame: the PFD
+altitude and speed tapes read `GPSAltitudeMSL`, `BaroPressureAltitude` and
+`GPSGroundSpeed` without a validity check. So each frame is built from scratch and a last
+value is never resent. A stale or invalid group goes out as the daemon's no-data state
+(zeros, as in the HMI's own initial `window.situation`), plus the daemon's invalid markers:
+
+| Group | Markers the HMI acts on |
+|---|---|
+| `ahrs` | `3276.7` (`ahrs.Invalid`) on every angle, turn rate, slip and G: the PFD draws its attitude failure |
+| `gps` | `GPSFixQuality` 0, satellites 0, `GPSHorizontalAccuracy` 999999: no fix, and the radar's "GPS invalid" |
+| `baro` | `BaroSourceType` 0, `BaroLastMeasurementTime` the zero time: no baro, and the radar's baro freshness test fails |
+| `airspeed` | `IndicatedAirSpeed` 0: the speed tape shows the ground speed, labelled GS |
+| `ems` | every key 0, the daemon's starting value. The HMI has no invalid EMS state, so this is the closest it can show |
+
+The `*Time` fields use a "stratux clock": monotonic seconds counted from year 1, as the
+daemon's. A fresh group carries the frame's clock and a stale one the zero time.
+`GPSLastGPSTimeStratuxTime` is always the frame's clock, because the radar and autopilot
+plates use it as "now" when they judge the baro and AHRS.
+
+**Fields a simulator doesn't have** are synthetic while the position is fresh: 8
+satellites (as in `$GPGGA`), accuracy 3 m / 4 m, NACp 10, and `BaroSourceType` 1 (the
+value of a real baro, verify against the BARO_TYPE_SIM proposal of T3.1). `GPSTurnRate`
+is always invalid: the HMI only falls back on it when the AHRS is invalid, and in a
+simulator that means the position is stale too. Traffic has `Last_source` 4 and
+`TargetType` 1, as RB-01's FLARM path gives it. `Alt` is MSL with `AltIsGNSS` true
+(verify, T3.1). `Age` is the time since the simulator reported the target; the HMI fades
+a target with it and drops it after 59 s, as for any RB-01 traffic.
+
+Measured with headless Chrome against the Linux build on 2026-10-28, roastbeef working
+tree of that day:
+
+- **All files load.** That is 97 files: everything under `/RB-01/` plus the shared ones.
+- **Every socket connects.** The rates measured were `/situation` 10.2/s, `/ems` 2.1/s,
+  and `/status`, `/traffic` and `/radar` about 1/s.
+- **The plates run on the synthetic flight.**
+  - The PFD shows the bank, IAS, altitude and auto QNH.
+  - The aircraft plate shows fuel, EMS OK and GPS 8.
+  - The radar shows the AI target with its relative altitude.
+- **The REST calls answer** since 2026-10-29 ([below](#the-hmis-rest-calls-d23)). The
+  only failing request left is `/favicon.ico`, which isn't in the `wwwroot/` copy (it is
+  roastbeef's `web/favicon.ico`).
+- **Not checked live:** the plates during a stale or disconnected simulator. The unit tests
+  cover those frames.
+
+### The HMI's REST calls (D23)
+
+The HMI also calls some of the daemon's REST endpoints, on boot and on some plates. Each
+answer is the daemon's own answer when it has nothing to report:
+
+| Call | Answer | Why it is empty |
+|---|---|---|
+| `GET /addons` | `[]` | The addons in `RB-01/addons/` write the settings files and the magnetometer calibration, which the wrapper doesn't keep. The HMI then has no addon plates |
+| `GET /radio` | `[]` | No radios on the wrapper; the radio plate shows none and posts nothing |
+| `GET /playback` | `[]` | No radio recordings |
+| `GET /updates/available` | `[]` | A SIM build never offers flight packages (CLAUDE.md rule 1); `/updates/install` is not served |
+
+**The addons bridge** (`/bridge/float`) is kept, because the HMI publishes the QNH in use
+there (`qnh`, `autoqnh`) for addons and probes:
+
+- `POST /bridge/float` merges a JSON object of numbers into the map (float32, as on the
+  daemon). The content type can be anything: the addons' own `curl -d` examples send
+  curl's form default. An empty body or `null` changes nothing.
+- `GET /bridge/float` returns the map.
+- `WS /bridge/float/ws` sends the whole map whenever it changes, but not on connect, as
+  on the daemon.
+- The map lives in memory and is lost on restart.
+
+The differences from the daemon:
+
+- **Nothing posted reaches the flight data.** The daemon takes `ias_mps` as the indicated
+  airspeed when it has no pitot sensor. The wrapper takes the airspeed from its source
+  only.
+- **A bad post is refused with 400 and stores nothing.** That covers a value that isn't a
+  finite number, a key longer than 64 characters, or a key beyond the 256th. The daemon
+  logs the error and answers 200.
+- **A post from a browser page of another origin is refused with 403,** as for
+  `/api/control`.
 
 ## Radio and control API
 
@@ -249,6 +408,32 @@ checks that.
   state messages/s at `rate=20`, plus traffic at 1 Hz.
 - The MSFS source **without the SDK installed** sends all four required groups as `null`,
   and `/api/status` names the missing DLL and the paths it tried.
+
+## Verified on the Linux dev box (2026-10-28, x86-64, .NET SDK 10.0.403, PowerShell 7.5.4)
+
+- **Checks.** The 128 unit tests pass and the format check is clean.
+- **Smoke test.** All 56 checks of `ci/smoke.ps1` pass on the self-contained single-file
+  `linux-x64` binary, with no .NET installed for it. That includes the `/RB-01` checks,
+  the HMI sockets, the HMI's REST calls and the addons bridge, and the Linux-only refusal
+  of `--source msfs`.
+- **Real tty.** A serial output on a pseudo-terminal delivers `$RBATT`, `$RBADC`,
+  `$GPRMC` and `$GPGGA` (profile `rb02`). Without `libSystem.IO.Ports.Native.so`, the
+  output reports the error and the wrapper keeps running.
+- **Cross-builds from Linux.** `win-x64` gives a PE32+ x86-64 exe and `linux-arm64` an
+  aarch64 ELF with its own `.so`. `win-arm64` is refused (NETSDK1032).
+- **The CI package step** for linux-x64, run locally, gives a tar.gz with the executable
+  bit kept and a checksum that verifies.
+- **The RB-01 HMI** from `/home/stefano/roastbeef/web/RB-01` loads at `/RB-01/` in
+  headless Chrome, together with the shared files from `wwwroot/`. Its plates run on the
+  wrapper's HMI sockets and REST answers, and it publishes its auto QNH on the bridge. The
+  only console error left is the missing `/favicon.ico`.
+
+Not verified:
+
+- the changed `ci/smoke.ps1` under Windows PowerShell 5.1, and the new CI matrix on
+  GitHub. Both run on the next push;
+- `linux-arm64` on a Pi;
+- a real RB device on a Linux serial port.
 
 ## Not verified yet: needs the MSFS SDK installed
 

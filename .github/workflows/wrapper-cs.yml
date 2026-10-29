@@ -1,8 +1,9 @@
 # CI/CD for the C# MSFS wrapper (wrapper-cs/, decision D19).
 #
 #  test     format check, build and unit tests on Linux and Windows
-#  package  self-contained single-file rbsim-msfs.exe, smoke-tested on Windows, uploaded as an artifact
-#  release  on a tag wrapper-cs-v<version>: a GitHub release with the zip and its SHA-256
+#  package  self-contained single-file rbsim-msfs for win-x64 and linux-x64, each smoke-tested on its
+#           own OS, uploaded as artifacts
+#  release  on a tag wrapper-cs-v<version>: a GitHub release with both archives and their SHA-256
 #
 # SimConnect.dll is never built, downloaded or packaged: users install the MSFS SDK (CLAUDE.md rule 7).
 
@@ -56,8 +57,8 @@ jobs:
         if: runner.os == 'Linux'
         run: dotnet format RbSim.Wrapper.slnx --verify-no-changes --no-restore
 
-      # The executable targets win-x64; on Linux this cross-builds it, which proves the
-      # whole solution compiles on both sides.
+      # The executable builds for the runner's OS (win-x64 or linux-x64), so the whole
+      # solution compiles on both sides.
       - name: Build
         run: dotnet build RbSim.Wrapper.slnx -c Release --no-restore
 
@@ -73,8 +74,20 @@ jobs:
           retention-days: 7
 
   package:
+    name: package (${{ matrix.rid }})
     needs: test
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            rid: win-x64
+            exe: rbsim-msfs.exe
+          # Linux: the synthetic source, serial outputs and the RB-01 HMI; the msfs source needs Windows.
+          - os: ubuntu-latest
+            rid: linux-x64
+            exe: rbsim-msfs
+    runs-on: ${{ matrix.os }}
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
@@ -101,7 +114,7 @@ jobs:
       - name: Publish
         shell: pwsh
         run: >
-          dotnet publish src/RbSim.Msfs/RbSim.Msfs.csproj -c Release -r win-x64 --self-contained true
+          dotnet publish src/RbSim.Msfs/RbSim.Msfs.csproj -c Release -r ${{ matrix.rid }} --self-contained true
           -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true
           -p:IsTransformWebConfigDisabled=true -p:DebugType=none
           -p:Version=${{ steps.version.outputs.version }}
@@ -116,30 +129,41 @@ jobs:
 
       - name: Smoke test
         shell: pwsh
-        run: ./ci/smoke.ps1 -Exe out/rbsim-msfs.exe
+        run: ./ci/smoke.ps1 -Exe out/${{ matrix.exe }}
 
+      # Windows: a flat zip. Linux: a tar.gz with a top folder, which keeps the executable bit, and
+      # libSystem.IO.Ports.Native.so, the serial port's native half, beside the executable.
       - name: Package
         id: package
         shell: pwsh
         run: |
-          $name = "rbsim-msfs-${{ steps.version.outputs.version }}-win-x64"
+          $name = "rbsim-msfs-${{ steps.version.outputs.version }}-${{ matrix.rid }}"
           $stage = Join-Path $env:RUNNER_TEMP $name
           New-Item -ItemType Directory -Path $stage | Out-Null
-          Copy-Item out/rbsim-msfs.exe, out/rbsim-msfs.example.json, README.md $stage
-          Copy-Item ../LICENSE $stage
-          $zip = Join-Path $env:RUNNER_TEMP "$name.zip"
-          Compress-Archive -Path "$stage/*" -DestinationPath $zip
-          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
-          "$hash  $name.zip" | Set-Content -Encoding ascii -NoNewline (Join-Path $env:RUNNER_TEMP "$name.zip.sha256")
-          "name=$name" >> $env:GITHUB_OUTPUT
-          Write-Host "$name.zip $hash"
+          $files = @('out/${{ matrix.exe }}', 'out/rbsim-msfs.example.json', 'README.md', '../LICENSE')
+          if ($IsLinux) { $files += 'out/libSystem.IO.Ports.Native.so' }
+          # the RB-01 HMI's shared files (wwwroot beside the executable), when the build has them
+          if (Test-Path out/wwwroot) { $files += 'out/wwwroot' }
+          Copy-Item $files $stage -Recurse
+          if ($IsWindows) {
+            $archive = "$name.zip"
+            Compress-Archive -Path "$stage/*" -DestinationPath (Join-Path $env:RUNNER_TEMP $archive)
+          } else {
+            $archive = "$name.tar.gz"
+            tar -czf (Join-Path $env:RUNNER_TEMP $archive) -C $env:RUNNER_TEMP $name
+            if ($LASTEXITCODE -ne 0) { throw "tar failed" }
+          }
+          $hash = (Get-FileHash (Join-Path $env:RUNNER_TEMP $archive) -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $archive" | Set-Content -Encoding ascii -NoNewline (Join-Path $env:RUNNER_TEMP "$archive.sha256")
+          "archive=$archive" >> $env:GITHUB_OUTPUT
+          Write-Host "$archive $hash"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: rbsim-msfs-win-x64
+          name: rbsim-msfs-${{ matrix.rid }}
           path: |
-            ${{ runner.temp }}/${{ steps.package.outputs.name }}.zip
-            ${{ runner.temp }}/${{ steps.package.outputs.name }}.zip.sha256
+            ${{ runner.temp }}/${{ steps.package.outputs.archive }}
+            ${{ runner.temp }}/${{ steps.package.outputs.archive }}.sha256
           retention-days: 30
           if-no-files-found: error
 
@@ -152,7 +176,8 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: rbsim-msfs-win-x64
+          pattern: rbsim-msfs-*
+          merge-multiple: true
           path: dist
 
       - name: Create release
@@ -165,15 +190,19 @@ jobs:
           prerelease=""
           case "$VERSION" in *-*) prerelease="--prerelease" ;; esac
           cat > notes.md <<EOF
-          rbsim-msfs $VERSION for Windows x64: MSFS 2020/2024 SimConnect to RB avionics status over
-          HTTP, WebSocket and USB serial (NMEA, FLARM and RB sentences).
+          rbsim-msfs $VERSION: MSFS 2020/2024 SimConnect to RB avionics status over HTTP, WebSocket
+          and USB serial (NMEA, FLARM and RB sentences).
 
-          - Self-contained: no .NET install needed. Unzip and run \`rbsim-msfs.exe --help\`.
-          - Needs the MSFS SDK for \`SimConnect.dll\` (Developer Mode > Help > SDK Installer); it is not bundled.
+          - Self-contained: no .NET install needed.
+          - **Windows x64** (\`-win-x64.zip\`): unzip and run \`rbsim-msfs.exe --help\`. The msfs source needs
+            the MSFS SDK for \`SimConnect.dll\` (Developer Mode > Help > SDK Installer); it is not bundled.
+          - **Linux x64** (\`-linux-x64.tar.gz\`): the synthetic source, the serial outputs and the RB-01 HMI
+            (\`rb01_web_dir\`); the msfs source needs Windows. Keep \`libSystem.IO.Ports.Native.so\` beside
+            \`rbsim-msfs\`.
           - Copy \`rbsim-msfs.example.json\` to \`rbsim-msfs.json\` to configure the serial outputs.
           - SIMULATOR USE ONLY. NOT FOR FLIGHT.
 
           Built from ${GITHUB_SHA} by run ${GITHUB_RUN_ID}.
           EOF
-          gh release create "$GITHUB_REF_NAME" ./*.zip ./*.sha256 \
+          gh release create "$GITHUB_REF_NAME" ./*.zip ./*.tar.gz ./*.sha256 \
             --title "rbsim-msfs $VERSION" --notes-file notes.md --verify-tag $prerelease

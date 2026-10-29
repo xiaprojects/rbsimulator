@@ -6,6 +6,103 @@ link the replacement.
 
 ## Decisions
 
+### D23 — The C# wrapper answers the HMI's REST calls and keeps the addons bridge (accepted, 2026-10-29)
+- **Request** (maintainer): add the REST answers D22 left out, so the HMI at `/RB-01/`
+  stops failing on them.
+- **Empty lists:** `GET /addons`, `/radio`, `/playback` and `/updates/available` answer
+  `[]`, the daemon's answer when it has nothing to report.
+  - **Addons:** the addons in `RB-01/addons/` write the settings files (`settings`) and the
+    magnetometer calibration (`magnetometer`), which the wrapper doesn't keep. So the
+    wrapper lists none, rather than plates that fail when used.
+  - **Updates:** a SIM build never offers flight packages (rule 1), and
+    `/updates/install` is not served.
+- **The addons bridge** (`/bridge/float`) is kept, because the HMI publishes the QNH in use
+  there. `RbSim.Core.Rb01Bridge` holds it in memory, as the daemon does.
+  - A POST merges a JSON object of float32 numbers.
+  - A GET returns the map.
+  - `/bridge/float/ws` sends the map on each change, checked at 5 Hz, and nothing on
+    connect.
+- **Differences from the daemon:**
+  - **No flight data from the bridge.** The daemon takes `ias_mps` as the indicated
+    airspeed when it has no pitot sensor. The wrapper ignores it, so the airspeed comes
+    from the source only.
+  - **A bad post gets 400 and stores nothing.** That covers a value that isn't a finite
+    number, a key longer than 64 characters, or a key beyond the 256th. The daemon logs the
+    error and answers 200.
+  - **A foreign web origin gets 403,** as for `/api/control` (D20). Any content type is
+    accepted, because the addons' own `curl -d` examples post with curl's form default.
+- New requirement RB-SIM-HMI-050.
+- **Not done:** `/favicon.ico`, which is a static file: copy roastbeef's `web/favicon.ico`
+  into `wwwroot/`. Also the SIM annunciation on every plate (HMI-030).
+
+### D22 — The C# wrapper serves the RB-01 daemon's HMI sockets (accepted, 2026-10-28)
+- **Request** (maintainer): generate the WebSockets the RB-01 HMI needs, so the HMI at
+  `/RB-01/` (D21) runs on the wrapper's data.
+- **Shape:**
+  - `/situation` (10 Hz), `/traffic` and `/radar` (1 Hz), `/ems` (2 Hz) and `/status`
+    (1 Hz) carry the daemon's own frames: `SituationData`, `TrafficInfo`, the EMS map and
+    `globalStatus`.
+  - `RbSim.Core.Rb01Hmi` builds them from the RB-SIM-IF/1 state message, as an RB-01 hub
+    would after `POST /sim/state`, so units and staleness stay in one place.
+  - `/autopilot`, `/keypad`, `/alerts`, `/radioStatus`, `/bridge/float/ws`, `/gdl90` and
+    `/weather` are accepted and stay quiet. (Since D23, `/bridge/float/ws` carries the
+    addons bridge.)
+  - This is the socket half of hub-lite (protocol §4.3), in the wrapper. It is new
+    requirement RB-SIM-HMI-040.
+- **Safety (SAF-050):**
+  - The HMI checks validity only through the daemon's markers, and its altitude and speed
+    tapes check nothing. So each frame is built from scratch.
+  - A stale group goes out as the daemon's no-data state (zeros) plus its markers:
+    `ahrs.Invalid` 3276.7, `GPSFixQuality` 0 with accuracy 999999, `BaroSourceType` 0,
+    `IndicatedAirSpeed` 0. A last value is never resent.
+  - EMS has no invalid state in the HMI, so stale EMS keys go out as 0.
+- **Finding for the roastbeef maintainer, not changed here (rule 3):**
+  - The PFD altitude tape (`GPSAltitudeMSL`), the altimeter (`BaroPressureAltitude`) and
+    the speed tape fall back to `GPSGroundSpeed` without checking `GPSFixQuality` or
+    `BaroSourceType`.
+  - The EMS plates keep the last value forever.
+  - With the real daemon, a lost GPS or baro therefore leaves those indications frozen on
+    the last value.
+- **Synthetic values** while fresh: 8 satellites, accuracy 3/4 m, NACp 10,
+  `BaroSourceType` 1 (verify against the `BARO_TYPE_SIM` proposal, T3.1). Traffic `Alt`
+  is MSL with `AltIsGNSS` true (verify, T3.1).
+- **Not done:**
+  - the HMI's REST calls (`/addons`, `/radio`, `/playback`, `/bridge/float`,
+    `/updates/available`), done in D23;
+  - the SIM annunciation on every plate (HMI-030).
+
+### D21 — A Linux build of the C# wrapper, and the RB-01 HMI served at /RB-01 (accepted, 2026-10-28)
+- **Request** (maintainer): a Linux-compatible build of the wrapper (D19). Also a
+  configuration parameter that serves an existing RB-01 website at `/RB-01`, for now
+  `/home/stefano/roastbeef/web/RB-01`.
+- **Build:**
+  - `rbsim-msfs` builds for the host by default: win-x64 on Windows, linux-x64 elsewhere.
+    `-r linux-arm64` also works.
+  - win-x64 stays the only target with the msfs source. `SimConnect.dll` is Windows-only,
+    so on Linux `--source msfs` exits with code 2 and a clear message; it doesn't retry
+    forever. The synthetic source, the API, the WebSocket and the serial outputs run on
+    Linux.
+  - CI's `package` job is now a matrix: win-x64 zip and linux-x64 tar.gz, each
+    smoke-tested on its own OS. A release attaches both.
+  - On Linux the serial port has a native half, `libSystem.IO.Ports.Native.so`, which
+    ships beside the executable. A missing copy is now a per-device error. Before this,
+    it was an unhandled exception that killed the wrapper.
+- **HMI:**
+  - `rb01_web_dir` / `--rb01-web-dir` serves that folder's static files at `/RB-01/`,
+    with `no-cache`. A missing folder is a startup error.
+  - The HMI's shared files (roastbeef `web/` `/css`, `/js`, `/img`, `/plates`,
+    `/settings`, `/synthview`) are copied into `wrapper-cs/src/RbSim.Msfs/wwwroot/` by the
+    maintainer. They ship beside the executable and are served at the root, so the HMI
+    loads without a roastbeef checkout. The copy has to be refreshed when roastbeef
+    changes. `settings/hobbsmeter.json`, a real flight record, is git-ignored.
+  - The daemon's WebSockets (`/situation`…) and REST calls still return 404, so the
+    plates show no data. See
+    [wrapper-cs/README.md](../wrapper-cs/README.md#rb-01-hmi-at-rb-01).
+  - A roastbeef-shaped `/situation` feed is a separate decision. It overlaps with the
+    RB-01 hub role of D16 and with the open D19 question of the Go wrapper.
+- **Local configuration:** `wrapper-cs/rbsim-msfs.json` is git-ignored, because ports and
+  folders are per machine.
+
 ### D20 — Radio and control write API in the C# wrapper, local-only by default (accepted, 2026-10-28)
 - **Request** (maintainer, test-machine session): add an API for radio/comm and actuator
   management to the C# wrapper (D19).

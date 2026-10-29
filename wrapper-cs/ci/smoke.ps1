@@ -56,14 +56,26 @@ Set-Content -Path (Join-Path $work 'bad.json') -Value '{ "sourse": "msfs" }'
 $ErrorActionPreference = 'Continue'
 & $Exe --config (Join-Path $work 'bad.json') 2>&1 | Out-Null
 $badExit = $LASTEXITCODE
+& $Exe --source synthetic --rb01-web-dir (Join-Path $work 'no-such-folder') 2>&1 | Out-Null
+$noDirExit = $LASTEXITCODE
+if ($IsLinux) {
+    & $Exe --source msfs 2>&1 | Out-Null
+    $msfsExit = $LASTEXITCODE
+}
 $ErrorActionPreference = 'Stop'
 Check ($badExit -eq 2) 'an unknown configuration key exits 2'
+Check ($noDirExit -eq 2) 'a missing RB-01 HMI folder exits 2'
+if ($IsLinux) { Check ($msfsExit -eq 2) 'the msfs source is refused on Linux (exit 2)' }
 
-# 2. run the synthetic source with a file serial output from a configuration file
+# 2. run the synthetic source with a file serial output and an RB-01 HMI folder from a configuration file
 $capture = Join-Path $work 'capture.nmea'
 $config = Join-Path $work 'smoke.json'
+$web = Join-Path $work 'RB-01'
+New-Item -ItemType Directory -Path (Join-Path $web 'js') | Out-Null
+Set-Content -Path (Join-Path $web 'index.html') -Value '<html><title>RB-01 smoke</title></html>'
+Set-Content -Path (Join-Path $web 'js/main.js') -Value 'var smoke = 1;'
 @{
-    source = 'synthetic'; listen = '127.0.0.1'; port = $Port
+    source = 'synthetic'; listen = '127.0.0.1'; port = $Port; rb01_web_dir = $web
     serial = @(@{ name = 'capture'; port = "file:$capture"; profile = 'rb07' })
 } | ConvertTo-Json -Depth 4 | Set-Content -Path $config
 
@@ -95,6 +107,14 @@ try {
         $page = Invoke-WebRequest "$base/" -UseBasicParsing
         Check ($page.StatusCode -eq 200 -and $page.Content -match 'RB Simulator wrapper') 'the status page is served'
 
+        Check ($status.rb01_web_dir -eq (Resolve-Path $web).Path) 'the RB-01 HMI folder is the one configured'
+        $hmi = Invoke-WebRequest "$base/RB-01" -UseBasicParsing
+        Check ($hmi.StatusCode -eq 200 -and $hmi.Content -match 'RB-01 smoke') '/RB-01 serves the HMI index.html'
+        $js = Invoke-WebRequest "$base/RB-01/js/main.js" -UseBasicParsing
+        Check ($js.StatusCode -eq 200 -and $js.Headers['Cache-Control'] -eq 'no-cache') '/RB-01/js/main.js is served, revalidated on reload'
+        $missing = try { (Invoke-WebRequest "$base/RB-01/missing.js" -UseBasicParsing).StatusCode } catch { [int]$_.Exception.Response.StatusCode }
+        Check ($missing -eq 404) 'a missing HMI file is 404'
+
         $ws = New-Object System.Net.WebSockets.ClientWebSocket
         $ws.ConnectAsync([Uri]"ws://127.0.0.1:$Port/ws?rate=20", [Threading.CancellationToken]::None).Wait()
         $buf = New-Object byte[] 16384
@@ -114,6 +134,40 @@ try {
         }
         Check ($null -ne $result -and $result.ok -eq $true) 'a WebSocket control command is accepted'
         $ws.Dispose()
+
+        # 2a. the RB-01 HMI sockets send the daemon's frames; the event-driven ones accept and stay quiet
+        function Receive-HmiFrame([string]$path) {
+            $sock = New-Object System.Net.WebSockets.ClientWebSocket
+            $sock.ConnectAsync([Uri]"ws://127.0.0.1:$Port$path", [Threading.CancellationToken]::None).Wait()
+            $r = $sock.ReceiveAsync($seg, [Threading.CancellationToken]::None).Result
+            $frame = [Text.Encoding]::UTF8.GetString($buf, 0, $r.Count) | ConvertFrom-Json
+            $sock.Dispose()
+            return $frame
+        }
+        $sit = Receive-HmiFrame '/situation'
+        Check ($sit.GPSFixQuality -eq 1 -and $sit.AHRSPitch -ne 3276.7 -and $sit.BaroSourceType -eq 1) '/situation sends a valid SituationData frame'
+        Check ((Receive-HmiFrame '/status').Version -like '*-SIM') '/status sends a -SIM globalStatus frame'
+        Check ($null -ne (Receive-HmiFrame '/ems').enginerpm) '/ems sends the EMS map'
+        Check ((Receive-HmiFrame '/traffic').Position_valid -eq $true) '/traffic sends TrafficInfo frames'
+        Check ($null -ne (Receive-HmiFrame '/radar').RadarRange) '/radar starts with the radar settings'
+        $quiet = New-Object System.Net.WebSockets.ClientWebSocket
+        $quiet.ConnectAsync([Uri]"ws://127.0.0.1:$Port/keypad", [Threading.CancellationToken]::None).Wait()
+        Check ($quiet.State -eq 'Open') 'a quiet HMI socket (/keypad) accepts the connection'
+        $quiet.Dispose()
+
+        # 2a. the HMI's REST calls: empty lists, and the addons bridge
+        foreach ($p in '/addons', '/radio', '/playback', '/updates/available') {
+            $r = Invoke-WebRequest "$base$p" -UseBasicParsing
+            Check ($r.StatusCode -eq 200 -and $r.Content.Trim() -eq '[]') "GET $p answers the daemon's empty list"
+        }
+        $bridgeSock = New-Object System.Net.WebSockets.ClientWebSocket
+        $bridgeSock.ConnectAsync([Uri]"ws://127.0.0.1:$Port/bridge/float/ws", [Threading.CancellationToken]::None).Wait()
+        $null = Invoke-WebRequest "$base/bridge/float" -Method Post -Body '{"qnh": 1013.25}' -UseBasicParsing
+        Check ((Invoke-RestMethod "$base/bridge/float").qnh -eq 1013.25) 'POST /bridge/float stores a value GET returns'
+        $pending = $bridgeSock.ReceiveAsync($seg, [Threading.CancellationToken]::None)
+        $changed = if ($pending.Wait(3000)) { [Text.Encoding]::UTF8.GetString($buf, 0, $pending.Result.Count) | ConvertFrom-Json }
+        Check ($changed.qnh -eq 1013.25) '/bridge/float/ws sends the map when it changes'
+        $bridgeSock.Dispose()
 
         # 2b. the control API: radios, autopilot and controls, verified by read-back
         $radio = Invoke-RestMethod "$base/api/radio"
@@ -135,6 +189,8 @@ try {
         Check ((Get-Code { Invoke-WebRequest "$base/api/control" -Method Post -ContentType 'application/json' -Body '{"xpdr_code": "7800"}' -UseBasicParsing }) -eq 400) 'an invalid command is refused with 400'
         Check ((Get-Code { Invoke-WebRequest "$base/api/control" -Method Post -ContentType 'text/plain' -Body '{"gear_down": true}' -UseBasicParsing }) -eq 415) 'a non-JSON content type is refused with 415'
         Check ((Get-Code { Invoke-WebRequest "$base/api/control" -Method Post -ContentType 'application/json' -Headers @{ Origin = 'http://example.invalid' } -Body '{"gear_down": true}' -UseBasicParsing }) -eq 403) 'a command from a foreign web origin is refused with 403'
+        Check ((Get-Code { Invoke-WebRequest "$base/bridge/float" -Method Post -Body '{"qnh": "x"}' -UseBasicParsing }) -eq 400) 'a bridge value that is not a number is refused with 400'
+        Check ((Get-Code { Invoke-WebRequest "$base/bridge/float" -Method Post -Headers @{ Origin = 'http://example.invalid' } -Body '{"qnh": 1}' -UseBasicParsing }) -eq 403) 'a bridge write from a foreign web origin is refused with 403'
     }
 }
 finally {

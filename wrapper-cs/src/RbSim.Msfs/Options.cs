@@ -85,6 +85,8 @@ public sealed class WrapperOptions
     public EmsUnits Ems { get; } = new();
     public List<SerialOutputConfig> Serial { get; } = [];
     public ControlOptions Control { get; } = new();
+    /// <summary>RB-01 HMI folder (roastbeef <c>web/RB-01</c>) served at <c>/RB-01/</c>; null serves nothing.</summary>
+    public string? Rb01WebDir { get; set; }
     public bool ListPorts { get; set; }
 
     public const string Usage = """
@@ -93,7 +95,7 @@ public sealed class WrapperOptions
         Options (they override the configuration file):
           --config PATH               JSON configuration (default: rbsim-msfs.json in the current
                                       folder, then beside the executable; see rbsim-msfs.example.json)
-          --source msfs|synthetic     data source (default msfs; synthetic needs no simulator)
+          --source msfs|synthetic     data source (default msfs, Windows only; synthetic needs no simulator)
           --listen ADDR               address to bind (default 0.0.0.0; use 127.0.0.1 for this PC only)
           --port N                    HTTP port (default 8090)
           --simconnect-dll PATH       SimConnect.dll to load (default: MSFS2024_SDK, MSFS_SDK, C:\MSFS 2024 SDK, C:\MSFS SDK)
@@ -105,9 +107,11 @@ public sealed class WrapperOptions
           --ems-oil bar|psi|inhg      EMS oil pressure unit (default bar)
           --ems-fuel-press bar|psi|inhg  EMS fuel pressure unit, $RBEMS only (default bar)
           --ems-fuel l|gal            EMS fuel quantity unit (default l)
-          --serial PORT[=PROFILE]     add a serial output, e.g. COM5=rb07 or file:out.nmea (default profile nmea-flarm)
+          --serial PORT[=PROFILE]     add a serial output, e.g. COM5=rb07, /dev/ttyACM0=rb07 or file:out.nmea
+                                      (default profile nmea-flarm)
           --no-control                refuse all writes to the simulator (read-only)
           --control-remote            accept control commands from other computers too (default: this PC only)
+          --rb01-web-dir PATH         serve this RB-01 HMI folder (roastbeef web/RB-01) at /RB-01/
           --list-ports                list the serial ports and exit
           --help                      this text
 
@@ -117,6 +121,15 @@ public sealed class WrapperOptions
 
         Endpoints:
           GET /                 live status page
+          GET /RB-01/           the RB-01 HMI files of --rb01-web-dir, when set
+          WS  /situation /traffic /radar /ems /status
+                                the RB-01 daemon's HMI sockets, in its frame shapes, so the HMI runs on
+                                this data; /autopilot /keypad /alerts /radioStatus /gdl90 /weather
+                                are accepted and stay quiet
+          GET /addons /radio /playback /updates/available
+                                the HMI's REST calls, answered with the daemon's empty list
+          GET|POST /bridge/float, WS /bridge/float/ws
+                                the daemon's addons bridge (the HMI's QNH), in memory only
           GET /api/state        RB-SIM-IF/1 state message (the body of POST /sim/state)
           GET /api/traffic      RB-SIM-IF/1 traffic message
           GET /api/simstate     canonical SimState, SI units
@@ -182,6 +195,7 @@ public sealed class WrapperOptions
                 case "--serial": o.Serial.Add(SerialArg(Next())); break;
                 case "--no-control": o.Control.Enabled = false; break;
                 case "--control-remote": o.Control.AllowRemote = true; break;
+                case "--rb01-web-dir": o.Rb01WebDir = Next(); break;
                 case "--list-ports": o.ListPorts = true; break;
                 default: throw new ArgumentException($"unknown option {a}");
             }
@@ -230,12 +244,22 @@ public sealed class WrapperOptions
             if (c.AllowRemote is bool remote) Control.AllowRemote = remote;
             if (c.Groups is { } groups) Control.Groups = [.. groups.Select(Actuators.ParseGroup).Distinct()];
         }
+        if (f.Rb01WebDir is not null) Rb01WebDir = f.Rb01WebDir;
     }
 
     void Validate()
     {
         if (Source is not ("msfs" or "synthetic")) throw new ArgumentException($"unknown source {Source}");
         if (Port is < 1 or > 65535) throw new ArgumentException($"port out of range: {Port}");
+        if (string.IsNullOrWhiteSpace(Rb01WebDir))
+        {
+            Rb01WebDir = null;
+        }
+        else
+        {
+            Rb01WebDir = Path.GetFullPath(Rb01WebDir);
+            if (!Directory.Exists(Rb01WebDir)) throw new ArgumentException($"rb01_web_dir: folder not found: {Rb01WebDir}");
+        }
         var ports = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         for (int i = 0; i < Serial.Count; i++)
         {
@@ -296,6 +320,7 @@ public sealed class WrapperOptions
         public EmsSection? Ems { get; set; }
         public List<SerialOutputConfig>? Serial { get; set; }
         public ControlSection? Control { get; set; }
+        public string? Rb01WebDir { get; set; }
     }
 
     sealed class ControlSection

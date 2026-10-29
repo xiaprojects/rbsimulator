@@ -175,31 +175,39 @@ public static class RbSimIf
     /// </summary>
     public static JsonObject Traffic(SimState s, double now)
     {
+        var arr = new JsonArray();
+        foreach (var t in FreshTargets(s, now)) arr.Add(TrafficInfo(t));
+        return new JsonObject { ["v"] = Version, ["src"] = s.Sim.Source, ["targets"] = arr };
+    }
+
+    /// <summary>Targets fresher than 10 s, nearest first, at most 50; none while disconnected.</summary>
+    public static IEnumerable<TrafficTarget> FreshTargets(SimState s, double now)
+    {
         IEnumerable<TrafficTarget> targets = s.Sim.Connected
             ? s.Traffic.Where(t => now - t.TMono <= Staleness.TrafficTargetS)
             : [];
         if (s.Pos.LatDeg is double lat && s.Pos.LonDeg is double lon)
             targets = targets.OrderBy(t => TeleportDetector.DistanceM(lat, lon, t.LatDeg, t.LonDeg));
+        return targets.Take(MaxTrafficTargets);
+    }
 
-        var arr = new JsonArray();
-        foreach (var t in targets.Take(MaxTrafficTargets))
+    /// <summary>One target in RB-01's TrafficInfo names and units; a field the sim lacks is left out.</summary>
+    public static JsonObject TrafficInfo(TrafficTarget t)
+    {
+        var o = new JsonObject
         {
-            var o = new JsonObject
-            {
-                ["Icao_addr"] = t.Id24,
-                ["Tail"] = t.Callsign,
-                ["Lat"] = R(t.LatDeg, 6),
-                ["Lng"] = R(t.LonDeg, 6),
-            };
-            // Whether Alt is pressure or GNSS altitude is settled in T3.1 (verify); this is MSL.
-            Put(o, "Alt", t.AltMslM is double a ? Units.MToFt(a) : null, 0);
-            Put(o, "Track", t.TrackTrueDeg, 0);
-            Put(o, "Speed", t.GsMps is double gs ? Units.MpsToKt(gs) : null, 0);
-            Put(o, "Vvel", t.VsMps is double vs ? Units.MpsToFpm(vs) : null, 0);
-            o["OnGround"] = t.OnGround;
-            arr.Add(o);
-        }
-        return new JsonObject { ["v"] = Version, ["src"] = s.Sim.Source, ["targets"] = arr };
+            ["Icao_addr"] = t.Id24,
+            ["Tail"] = t.Callsign,
+            ["Lat"] = R(t.LatDeg, 6),
+            ["Lng"] = R(t.LonDeg, 6),
+        };
+        // Whether Alt is pressure or GNSS altitude is settled in T3.1 (verify); this is MSL.
+        Put(o, "Alt", t.AltMslM is double a ? Units.MToFt(a) : null, 0);
+        Put(o, "Track", t.TrackTrueDeg, 0);
+        Put(o, "Speed", t.GsMps is double gs ? Units.MpsToKt(gs) : null, 0);
+        Put(o, "Vvel", t.VsMps is double vs ? Units.MpsToFpm(vs) : null, 0);
+        o["OnGround"] = t.OnGround;
+        return o;
     }
 
     public static double Pressure(double pa, PressureUnit u) => u switch

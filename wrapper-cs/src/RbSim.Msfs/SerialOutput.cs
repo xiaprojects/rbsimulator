@@ -97,7 +97,10 @@ public sealed class SerialOutput : ISource
                 else
                     RunSerial();
             }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or ArgumentException)
+            // DllNotFoundException: on Linux, libSystem.IO.Ports.Native.so is missing beside the
+            // executable. One device failing must not take the web service down with it.
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or ArgumentException
+                or DllNotFoundException)
             {
                 Status.LastError = ex.Message;
                 // Log a failure once, not every retry while the device stays unplugged.

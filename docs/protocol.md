@@ -881,6 +881,8 @@ permanent: withdraw, never renumber. Tests declare `# Covers: <id>`. Verificatio
 | **HMI-010** | hub-lite implements §4.1 identically and serves the HMI from a configured roastbeef checkout through FakeStratux, with a neutral fixture only | T, I | M1 |
 | **HMI-020** | hub-lite socket rates stay within §4.3 | T | M1 |
 | **HMI-030** | The HMI shows the SIM annunciation on every plate (hub-lite and rbsim RB-01) | D | M1, M3 |
+| **HMI-040** | The C# wrapper serves the RB-01 HMI sockets (`/situation`, `/traffic`, `/radar`, `/ems`, `/status`) in the daemon's frame shapes, built from its state message, at the §4.3 rates. A stale or invalid group goes out as the daemon's no-data state plus its invalid markers, never as the last value (D22) | T | — |
+| **HMI-050** | The C# wrapper answers the HMI's REST calls `/addons`, `/radio`, `/playback` and `/updates/available` with the daemon's empty list, and keeps the addons bridge `/bridge/float` (GET, POST, `/bridge/float/ws` on change) in memory. Nothing posted to the bridge reaches the flight data; a bad post or a foreign web origin is refused and stores nothing (D23) | T | — |
 | **ESP-010** | Device lines follow the §4.4 line rules | T | M0, M4 |
 | **ESP-020** | `$RBATT` per §4.4 | T | M0, M4 |
 | **ESP-030** | `$RBADC` per §4.4 | T | M0, M4 |

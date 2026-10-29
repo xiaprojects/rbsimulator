@@ -28,6 +28,8 @@ using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Microsoft.AspNetCore.StaticFiles;
+using Microsoft.Extensions.FileProviders;
 using RbSim.Core;
 using RbSim.Msfs;
 
@@ -45,6 +47,9 @@ try
         foreach (var name in System.IO.Ports.SerialPort.GetPortNames().Order()) Console.WriteLine(name);
         return 0;
     }
+    // Refused, not left retrying: SimConnect.dll exists only on Windows, so this source could never connect.
+    if (options.Source == "msfs" && !OperatingSystem.IsWindows())
+        throw new ArgumentException("the msfs source needs Windows (SimConnect.dll); on this system use --source synthetic");
 }
 catch (Exception ex) when (ex is ArgumentException or FormatException)
 {
@@ -54,7 +59,8 @@ catch (Exception ex) when (ex is ArgumentException or FormatException)
 }
 
 string version = Assembly.GetExecutingAssembly().GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion.Split('+')[0] ?? "0.0.0";
-string wrapperId = $"rbsim-msfs {version} {options.Source} windows/{System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture.ToString().ToLowerInvariant()}";
+string os = OperatingSystem.IsWindows() ? "windows" : OperatingSystem.IsMacOS() ? "macos" : "linux";
+string wrapperId = $"rbsim-msfs {version} {options.Source} {os}/{System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture.ToString().ToLowerInvariant()}";
 
 var builder = WebApplication.CreateSlimBuilder();
 builder.WebHost.UseUrls($"http://{options.Listen}:{options.Port}");
@@ -120,6 +126,7 @@ JsonObject StatusMessage()
         ["teleport_seq"] = s.Sim.TeleportSeq,
         ["last_error"] = st.LastError,
         ["config"] = options.ConfigPath,
+        ["rb01_web_dir"] = options.Rb01WebDir,
         ["control"] = ControlSummary(),
         ["serial"] = new JsonArray([.. serialOutputs.Select(o => (JsonNode)new JsonObject
         {
@@ -162,11 +169,17 @@ string? ControlRefusal(HttpContext ctx)
     var ip = ctx.Connection.RemoteIpAddress;
     if (!options.Control.AllowRemote && (ip is null || !System.Net.IPAddress.IsLoopback(ip)))
         return "control from other computers is disabled (control.allow_remote = false)";
-    string origin = ctx.Request.Headers.Origin.ToString();
-    if (origin.Length > 0 && !(Uri.TryCreate(origin, UriKind.Absolute, out var u)
-            && string.Equals(u.Authority, ctx.Request.Host.Value, StringComparison.OrdinalIgnoreCase)))
-        return $"control from origin {origin} is refused";
+    if (ForeignOrigin(ctx) is string origin) return $"control from origin {origin} is refused";
     return null;
+}
+
+// The Origin of a browser request from a page on another host; null for the wrapper's own pages
+// and for clients that send none (curl, scripts).
+static string? ForeignOrigin(HttpContext ctx)
+{
+    string origin = ctx.Request.Headers.Origin.ToString();
+    return origin.Length > 0 && !(Uri.TryCreate(origin, UriKind.Absolute, out var u)
+            && string.Equals(u.Authority, ctx.Request.Host.Value, StringComparison.OrdinalIgnoreCase)) ? origin : null;
 }
 
 // Validates and queues a command object. All or nothing: one bad key rejects the whole set.
@@ -196,6 +209,33 @@ app.Use(async (ctx, next) =>
     await next();
 });
 app.UseWebSockets(new WebSocketOptions { KeepAliveInterval = TimeSpan.FromSeconds(15) });
+
+// The RB-01 HMI files, e.g. a roastbeef working tree's web/RB-01. no-cache makes the browser
+// revalidate, so an edit there shows on the next reload.
+if (options.Rb01WebDir is string rb01WebDir)
+{
+    app.UseFileServer(new FileServerOptions
+    {
+        RequestPath = "/RB-01",
+        FileProvider = new PhysicalFileProvider(rb01WebDir),
+        StaticFileOptions = { OnPrepareResponse = f => f.Context.Response.Headers.CacheControl = "no-cache" },
+    });
+}
+
+// The HMI's shared files (/css, /js, /img, /plates, /settings, /synthview, as on RB-01), from
+// wwwroot beside the executable. Its index.html is the embedded status page, never copied there.
+string sharedWebDir = Path.Combine(AppContext.BaseDirectory, "wwwroot");
+if (Directory.Exists(sharedWebDir))
+{
+    var types = new FileExtensionContentTypeProvider();
+    types.Mappings.TryAdd(".glb", "model/gltf-binary"); // synthview aircraft models
+    app.UseStaticFiles(new StaticFileOptions
+    {
+        FileProvider = new PhysicalFileProvider(sharedWebDir),
+        ContentTypeProvider = types,
+        OnPrepareResponse = f => f.Context.Response.Headers.CacheControl = "no-cache",
+    });
+}
 
 app.MapGet("/", () =>
 {
@@ -333,10 +373,89 @@ JsonObject WsControl(string text, string? refusal, bool complete)
 static Task Send(WebSocket ws, JsonNode msg, CancellationToken ct) =>
     ws.SendAsync(Encoding.UTF8.GetBytes(msg.ToJsonString()), WebSocketMessageType.Text, true, ct);
 
+// The RB-01 daemon's HMI sockets, so the HMI at /RB-01/ runs on the wrapper's data. The frames
+// (Rb01Hmi) come from the same state message as /api/state, at the daemon's rates within protocol
+// §4.3. The daemon's event-driven sockets have nothing to say here: they are accepted and stay
+// quiet, as the daemon's are while nothing happens, so the HMI stops reconnecting every second.
+var hmi = new Rb01Hmi();
+string hmiVersion = $"rbsim-msfs {version}";
+app.Map("/situation", ctx => HmiSocket(ctx, 0.1, now => [hmi.Situation(StateMessage(false), now)]));
+app.Map("/traffic", ctx => HmiSocket(ctx, 1, now => Rb01Hmi.Traffic(store.Snapshot, now, DateTime.UtcNow)));
+app.Map("/radar", ctx => HmiSocket(ctx, 1, now => Rb01Hmi.Traffic(store.Snapshot, now, DateTime.UtcNow), Rb01Hmi.RadarSettings()));
+app.Map("/ems", ctx => HmiSocket(ctx, 0.5, now => [Rb01Hmi.Ems(StateMessage(false))]));
+app.Map("/status", ctx => HmiSocket(ctx, 1, now => [Rb01Hmi.Status(StateMessage(false), hmiVersion, now)]));
+foreach (var path in new[] { "/autopilot", "/keypad", "/alerts", "/radioStatus", "/gdl90", "/weather" })
+    app.Map(path, ctx => HmiSocket(ctx, 0, null));
+var bridge = new Rb01Bridge();
+app.Map("/bridge/float/ws", ctx =>
+{
+    long seen = bridge.Version; // as on the daemon, a client gets the changes, not the map on connect
+    return HmiSocket(ctx, 0.2, now => bridge.Changes(ref seen));
+});
+
+// The daemon's REST calls the HMI makes on boot and on some plates. The wrapper has no addons
+// (those in RB-01/addons write settings files and magnetometer calibration it doesn't keep), no
+// radios, no recordings and no updates (a SIM build never offers flight packages), so these answer
+// the daemon's empty list. The addons bridge is kept, without its airspeed input (Rb01Bridge).
+foreach (var path in new[] { "/addons", "/radio", "/playback", "/updates/available" })
+    app.MapGet(path, () => Json(new JsonArray()));
+app.MapGet("/bridge/float", () => Json(bridge.Snapshot()));
+app.MapPost("/bridge/float", async (HttpContext ctx) =>
+{
+    if (ForeignOrigin(ctx) is string origin) return Json(new JsonObject { ["ok"] = false, ["errors"] = new JsonArray($"origin {origin} is refused") }, 403);
+    using var body = new StreamReader(ctx.Request.Body, Encoding.UTF8);
+    // Any content type: the addons' own curl examples post with curl's form default.
+    string? why = bridge.Post(await body.ReadToEndAsync(ctx.RequestAborted));
+    return why is null ? Results.Ok() : Json(new JsonObject { ["ok"] = false, ["errors"] = new JsonArray(why) }, 400);
+});
+
+// Sends the first frame, then frames every periodS until the client leaves. Only this loop
+// sends; the reader just drains what the client says and notices when it closes.
+async Task HmiSocket(HttpContext ctx, double periodS, Func<double, IEnumerable<JsonNode>>? frames, JsonNode? first = null)
+{
+    if (!ctx.WebSockets.IsWebSocketRequest)
+    {
+        ctx.Response.StatusCode = StatusCodes.Status404NotFound; // the daemon's REST twin of this path isn't served
+        return;
+    }
+    using var ws = await ctx.WebSockets.AcceptWebSocketAsync();
+    var ct = ctx.RequestAborted;
+    var reader = Task.Run(async () =>
+    {
+        var buf = new byte[1024];
+        try
+        {
+            while (ws.State == WebSocketState.Open && (await ws.ReceiveAsync(buf.AsMemory(), ct)).MessageType != WebSocketMessageType.Close) { }
+        }
+        catch (Exception) { /* connection gone */ }
+    }, ct);
+    try
+    {
+        if (first is not null) await Send(ws, first, ct);
+        if (frames is null)
+        {
+            await reader;
+        }
+        else
+        {
+            using var timer = new PeriodicTimer(TimeSpan.FromSeconds(periodS));
+            do
+            {
+                foreach (var f in frames(StateStore.Now)) await Send(ws, f, ct);
+            } while (ws.State == WebSocketState.Open && await timer.WaitForNextTickAsync(ct));
+        }
+        if (ws.State == WebSocketState.CloseReceived)
+            await ws.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, null, CancellationToken.None);
+    }
+    catch (Exception ex) when (ex is OperationCanceledException or WebSocketException) { /* client left */ }
+}
+
 app.Lifetime.ApplicationStarted.Register(() =>
 {
     log.LogInformation("{Wrapper} listening on http://{Listen}:{Port}/", wrapperId, options.Listen, options.Port);
     log.LogInformation("Configuration: {Config}", options.ConfigPath ?? "none (defaults and command line)");
+    if (options.Rb01WebDir is not null) log.LogInformation("RB-01 HMI at /RB-01/ from {Dir}", options.Rb01WebDir);
+    if (Directory.Exists(sharedWebDir)) log.LogInformation("HMI shared files at / from {Dir}", sharedWebDir);
     source.Start();
     foreach (var o in serialOutputs) o.Start();
 });
