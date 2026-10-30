@@ -216,3 +216,6 @@ if ($failures.Count -gt 0) {
 }
 Remove-Item -Recurse -Force $work
 Write-Host "`nall smoke checks passed"
+# The exit-2 runs in 1. leave $LASTEXITCODE at 2, and a GitHub Actions pwsh step ends with
+# `exit $LASTEXITCODE`, so a pass must say so.
+exit 0
