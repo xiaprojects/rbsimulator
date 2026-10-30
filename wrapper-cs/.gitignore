@@ -7,5 +7,4 @@ TestResults/
 SimConnect.dll
 # Local configuration: COM ports and folders differ per machine; start from rbsim-msfs.example.json
 rbsim-msfs.json
-# A real flight record (departure/landing position and time), copied with the RB-01 settings: never public (CLAUDE.md rule 6)
-src/RbSim.Msfs/wwwroot/settings/hobbsmeter.json
+src/RbSim.Msfs/wwwroot

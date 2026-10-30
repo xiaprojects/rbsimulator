@@ -15,6 +15,7 @@ index).
 | RB-04 | EMS display (ESP32 side) | ESP32-S3 | `../rb-esp` (EMS-USB templates) |
 | RB-05 | round traffic display | ESP32-S3 | `../rb-esp` (TRAFFIC / WIRED-USB) |
 | RB-07 | RB-02 + RB-05 in one box | ESP32-S3 | `../rb-esp` (BT / USB) |
+| RB-09 | remote display: an RB-02 driven by another device's attitude and air data over USB | ESP32-S3 | `../rb-esp` (`RB-09-*-USB-*` templates) |
 
 ## RB-01 — roastbeef (Go daemon `stratuxrun` + AngularJS HMI)
 
@@ -139,6 +140,13 @@ Pitot: `main/airspeed.go`.
 | GPS NMEA | `main/RB/RB02.c:1115` `NMEA_ParseBuffer` | `$GPRMC`/`$GPGGA` (or `GN`) | needs `RB_ENABLE_USB_NMEA`; hand-rolled scanners; the hemisphere trick relies on a non-digit path (see rb-esp CLAUDE.md) |
 | FLARM traffic | `main/RB/RB05_FlarmParser.c` | `$PFLAU`/`$PFLAA` | needs `RB_ENABLE_USB_FLARM`; store holds **10** targets; `FlarmObstacle` fields are `int16`; `z` is metres |
 | EMS | `main/RB/RB04_NMEA_Parser.c` | `$RBEMS`/`$RBCYL` | `parse_int_token` returns **`int16`**; integers only |
+| RB-09 remote display | `main/RB/RB09_Slave.c` `RB09_Slave_ParseData` | `$RBATT`/`$RBAIR`, profile `rb09` (D24) | needs `RB_ENABLE_SLAVE_DEVICE`; its `$RBATT` is the 17-field one an RB-02 prints with NMEA output on, **not** RB-SIM-ESP-020's; checksum mandatory; float fields; INOP after 1 s (attitude) and 3 s (air) |
+
+**USB-Serial-JTAG control lines** (checked on an RB-09, D24): the device receives with DTR off
+or on. On Linux, opening the port with both lines off resets the chip once. Linux raises
+both lines on open, and pyserial and .NET then drop DTR before RTS, so RTS is briefly high
+with DTR low, which is the chip-reset state. Open it with DTR high and RTS low (wrapper:
+`"dtr": true`). Not checked on Windows.
 
 ### Where sim data must enter (the new `RB_ENABLE_SIM` work)
 

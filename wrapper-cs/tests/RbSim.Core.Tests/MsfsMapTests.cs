@@ -76,6 +76,7 @@ public class UnitsTests
     {
         Assert.Equal(51.444444, 100 * Units.KtToMps, 5);
         Assert.Equal(100.0, Units.MpsToKt(100 * Units.KtToMps), 9);
+        Assert.Equal(185.2, Units.MpsToKmh(100 * Units.KtToMps), 9);
         Assert.Equal(3.785411784, Units.UsGalToL, 12);
         Assert.Equal(101320.76, 29.92 * Units.InHgToPa, 1);
         Assert.Equal(6894.757, Units.PsiToPa, 3);

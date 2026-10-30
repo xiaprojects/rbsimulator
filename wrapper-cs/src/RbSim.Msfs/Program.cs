@@ -76,6 +76,8 @@ ISource source = options.Source == "synthetic"
     : new MsfsSource(store, options, actuators, app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("msfs"));
 var serialLog = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("serial");
 var serialOutputs = options.Serial.Where(s => s.Enabled).Select(s => new SerialOutput(store, s, options.Ems, serialLog)).ToList();
+var udpLog = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("udp");
+var udpOutputs = options.Udp.Where(u => u.Enabled).Select(u => new UdpOutput(store, u, options.Ems, udpLog)).ToList();
 
 var canonicalJson = new JsonSerializerOptions
 {
@@ -141,6 +143,26 @@ JsonObject StatusMessage()
             ["last_error"] = o.Status.LastError,
             ["last_device_line"] = o.Status.LastDeviceLine,
         })]),
+        ["udp"] = new JsonArray([.. udpOutputs.Select(o => (JsonNode)new JsonObject
+        {
+            ["name"] = o.Status.Name,
+            ["target"] = o.Status.Target,
+            ["profile"] = o.Status.Profile,
+            ["lines_per_s"] = Math.Round(o.Status.Lines.Hz(now), 1),
+            ["lines_sent"] = o.Status.LinesSent,
+            ["datagrams"] = o.Status.Datagrams,
+            ["last_error"] = o.Status.LastError,
+        })]),
+        ["nav"] = Guidance.Compute(s, now) is { } g
+            ? new JsonObject
+            {
+                ["from"] = g.FromId,
+                ["to"] = g.ToId,
+                ["dist_nm"] = Math.Round(Units.MToNm(g.DistanceM), 1),
+                ["brg_true_deg"] = Math.Round(g.BearingTrueDeg, 0),
+                ["xtk_nm"] = Math.Round(Units.MToNm(g.XtkM), 2), // + right of course
+            }
+            : null,
     };
 }
 
@@ -384,8 +406,20 @@ app.Map("/traffic", ctx => HmiSocket(ctx, 1, now => Rb01Hmi.Traffic(store.Snapsh
 app.Map("/radar", ctx => HmiSocket(ctx, 1, now => Rb01Hmi.Traffic(store.Snapshot, now, DateTime.UtcNow), Rb01Hmi.RadarSettings()));
 app.Map("/ems", ctx => HmiSocket(ctx, 0.5, now => [Rb01Hmi.Ems(StateMessage(false))]));
 app.Map("/status", ctx => HmiSocket(ctx, 1, now => [Rb01Hmi.Status(StateMessage(false), hmiVersion, now)]));
-foreach (var path in new[] { "/autopilot", "/keypad", "/alerts", "/radioStatus", "/gdl90", "/weather" })
+foreach (var path in new[] { "/keypad", "/alerts", "/radioStatus", "/gdl90", "/weather" })
     app.Map(path, ctx => HmiSocket(ctx, 0, null));
+// The sim GPS's active leg (D25): the socket at the daemon's 1 s, and its REST twin's GET, the
+// waypoint list the HSI and the path are drawn from. The sim's GPS owns the plan, so the HMI's
+// POST (load a plan), PUT (start) and DELETE (stop) change nothing; they get the daemon's reply.
+app.Map("/autopilot", async ctx =>
+{
+    if (ctx.WebSockets.IsWebSocketRequest)
+    {
+        await HmiSocket(ctx, 1, now => [Rb01Hmi.Autopilot(store.Snapshot, now)]);
+        return;
+    }
+    await Json(HttpMethods.IsGet(ctx.Request.Method) ? Rb01Hmi.Waypoints(store.Snapshot, StateStore.Now) : new JsonArray()).ExecuteAsync(ctx);
+});
 var bridge = new Rb01Bridge();
 app.Map("/bridge/float/ws", ctx =>
 {
@@ -458,9 +492,11 @@ app.Lifetime.ApplicationStarted.Register(() =>
     if (Directory.Exists(sharedWebDir)) log.LogInformation("HMI shared files at / from {Dir}", sharedWebDir);
     source.Start();
     foreach (var o in serialOutputs) o.Start();
+    foreach (var o in udpOutputs) o.Start();
 });
 app.Lifetime.ApplicationStopping.Register(() =>
 {
+    foreach (var o in udpOutputs) o.Stop();
     foreach (var o in serialOutputs) o.Stop();
     source.Stop();
 });

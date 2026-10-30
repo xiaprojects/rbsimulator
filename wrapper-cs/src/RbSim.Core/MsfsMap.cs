@@ -55,6 +55,8 @@ public enum U
     Nav1Radial, Nav1HasNav, XpdrCode, XpdrState, XpdrIdent,
     FlapsPct, ElevTrimPct, GearHandle, ParkingBrake,
     ZuluTime, ZuluDay, ZuluMonth, ZuluYear, SimulationTime,
+    GpsWpActive, GpsWpNextLat, GpsWpNextLon, GpsWpNextAlt, GpsWpPrevValid, GpsWpPrevLat, GpsWpPrevLon,
+    GpsWpNextId, GpsWpPrevId,
 }
 
 /// <summary>Indexes into <see cref="MsfsDatums.Traffic"/>.</summary>
@@ -144,6 +146,19 @@ public static class MsfsDatums
         new("ZULU MONTH OF YEAR", "number"),
         new("ZULU YEAR", "number"),
         new("SIMULATION TIME", "seconds"),
+        // The sim GPS's active leg, for the guidance sentences and RB-01's path and HSI (D25).
+        // These are the SDK's GPS variables; whether every avionics package (the WT G1000 NXi,
+        // G3X, GNS 430/530, MSFS 2024's) keeps them current is checked on L1 (verify). The IDs are
+        // strings in the same definition, decoded by DataLayout.
+        new("GPS IS ACTIVE WAY POINT", "bool"),
+        new("GPS WP NEXT LAT", "degrees"),
+        new("GPS WP NEXT LON", "degrees"),
+        new("GPS WP NEXT ALT", "meters"),
+        new("GPS WP PREV VALID", "bool"),
+        new("GPS WP PREV LAT", "degrees"),
+        new("GPS WP PREV LON", "degrees"),
+        new("GPS WP NEXT ID", null, DatumType.String32),
+        new("GPS WP PREV ID", null, DatumType.String32),
     ];
 
     public static readonly Datum[] Traffic =
@@ -190,8 +205,9 @@ public static class MsfsMap
     /// <summary>
     /// Builds the ownship groups from one user-aircraft frame. <paramref name="raw"/> is indexed
     /// by <see cref="U"/>, in request units, NaN where the datum was rejected (RB-SIM-MSF-130).
+    /// <paramref name="str"/> holds the string datums at the same indexes; null where rejected.
     /// </summary>
-    public static void ApplyUser(SimState s, double[] raw, double now, MsfsProfile profile)
+    public static void ApplyUser(SimState s, double[] raw, double now, MsfsProfile profile, string?[]? str = null)
     {
         double R(U u) => raw[(int)u];
         double? F(U u) => Units.Finite(raw[(int)u]);
@@ -311,6 +327,8 @@ public static class MsfsMap
         };
         controls.Valid = controls.FlapsPct.HasValue || controls.GearDown.HasValue;
 
+        var nav = Nav(raw, str, now);
+
         s.Pos = pos;
         s.Att = att;
         s.Air = air;
@@ -321,8 +339,36 @@ public static class MsfsMap
         s.Ap = ap;
         s.Radio = radio;
         s.Controls = controls;
+        s.Nav = nav;
         s.Sim.OnGround = Bool(R(U.OnGround)) ?? false;
         s.Sim.Utc = Utc(R(U.ZuluYear), R(U.ZuluMonth), R(U.ZuluDay), R(U.ZuluTime));
+    }
+
+    /// <summary>
+    /// The active leg. Valid only while the GPS has an active waypoint with a position other
+    /// than 0,0 (what the variables read with no plan loaded). The origin is kept only while
+    /// GPS WP PREV VALID says so; a direct-to without one is flown from the aircraft (Guidance).
+    /// An altitude of 0 is the plan giving none.
+    /// </summary>
+    public static NavGroup Nav(double[] raw, string?[]? str, double now)
+    {
+        double R(U u) => raw[(int)u];
+        string Id(U u) => str is not null && (int)u < str.Length ? (str[(int)u] ?? "").Trim() : "";
+        double? toLat = Units.Finite(R(U.GpsWpNextLat)), toLon = Units.Finite(R(U.GpsWpNextLon));
+        bool prev = Bool(R(U.GpsWpPrevValid)) == true;
+        var nav = new NavGroup
+        {
+            TMono = now,
+            ToId = Id(U.GpsWpNextId),
+            ToLatDeg = toLat,
+            ToLonDeg = toLon,
+            ToAltMslM = Units.Finite(R(U.GpsWpNextAlt)) is double alt && alt != 0 ? alt : null,
+            FromId = prev ? Id(U.GpsWpPrevId) : "",
+            FromLatDeg = prev ? Units.Finite(R(U.GpsWpPrevLat)) : null,
+            FromLonDeg = prev ? Units.Finite(R(U.GpsWpPrevLon)) : null,
+        };
+        nav.Valid = Bool(R(U.GpsWpActive)) == true && toLat is double la && toLon is double lo && (la != 0 || lo != 0);
+        return nav;
     }
 
     /// <summary>GPS track, or atan2(east, north) of the world velocity when the GPS track is missing.</summary>

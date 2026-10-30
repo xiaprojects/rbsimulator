@@ -178,6 +178,64 @@ public static class Nmea
         return Line(body);
     }
 
+    /// <summary>
+    /// $RBATT in RB-09's layout (D24, RB-SIM-ESP-090): the sentence an RB-02 prints for its
+    /// remote display and rb-esp RB09_Slave.c parses. Same name as the RB-SIM-IF sentence of
+    /// <see cref="Rbatt"/>, different layout. Roll, pitch, yaw (deg), acceleration x y z (g),
+    /// gyro x y z (deg/s), then eight optional fields left empty. Mapped onto what RB-09 reads:
+    /// yaw is minus the true heading, 0 to −360, because the heading card shows −yaw and the
+    /// turn needle differentiates it. The acceleration is the g load at the ball angle, x on the
+    /// normal axis and y lateral, negative with the ball right (RB-02 draws the ball at
+    /// −120 px × y), z zero, so the G-meter's |accel| is the g load. The gyro is zero: RB-09
+    /// reads none and takes the turn rate from the yaw. Pitch and roll keep the §2.1 signs, as
+    /// RB-02's advanced attitude screen does. All of these signs were checked on an RB-09 screen
+    /// (D24). Numbers follow RB09_Slave.c, which reads floats, not the int16 rule. Not sent while
+    /// attitude is stale or a value is missing, so RB-09 shows INOP after its 1 s timeout.
+    /// </summary>
+    public static string? RbattSlave(SimState s, double now)
+    {
+        var a = s.Att;
+        if (!Staleness.Fresh(a, Staleness.AttS, now, s.Sim)) return null;
+        if (a.RollDeg is not double roll || a.PitchDeg is not double pitch || a.HdgTrueDeg is not double hdg
+            || a.SlipDeg is not double slip || a.GLoad is not double g) return null;
+        g = Math.Clamp(g, -9.99, 9.99);
+        double ball = Math.Clamp(slip, -20, 20) * Math.PI / 180.0;
+        string body = string.Join(',', "RBATT",
+            Num(Math.Clamp(roll, -180, 180), 2),
+            Num(Math.Clamp(pitch, -90, 90), 2),
+            Num(-Units.Wrap360(hdg), 2),
+            Num(g * Math.Cos(ball), 3),
+            Num(-g * Math.Sin(ball), 3),
+            Num(0, 3),
+            Num(0, 2), Num(0, 2), Num(0, 2),
+            "", "", "", "", "", "", "", "");
+        return Line(body);
+    }
+
+    /// <summary>
+    /// $RBAIR, RB-09's air data (D24, RB-SIM-ESP-090), as rb-esp RB09_Slave_FormatAir() writes
+    /// it: static pressure and QNH in inHg (4 and 5 decimals), OAT °C, baro VS ft/min, IAS km/h,
+    /// and the wind left empty (RB devices compute their own). RB-09 adopts this QNH: a remote
+    /// display follows its master's setting, and here the sim is the master. Not sent while air
+    /// data is stale or the static pressure, QNH or VS is unknown, so RB-09 shows INOP after its
+    /// 3 s timeout instead of an altitude on an invented setting.
+    /// </summary>
+    public static string? Rbair(SimState s, double now)
+    {
+        var a = s.Air;
+        if (!Staleness.Fresh(a, Staleness.AirS, now, s.Sim)) return null;
+        double? staticPa = a.StaticPa ?? (a.PressureAltM is double pa ? Units.IsaPressurePa(pa) : null);
+        if (staticPa is null || a.SimQnhPa is not double qnh || a.VsBaroMps is not double vs) return null;
+        string body = string.Join(',', "RBAIR",
+            Num(Units.PaToInHg(staticPa.Value), 4),
+            Num(Units.PaToInHg(qnh), 5),
+            Num(a.OatC, 1),
+            Num(Units.MpsToFpm(vs), 0),
+            Num(a.IasMps is double ias ? Units.MpsToKmh(ias) : null, 1),
+            "", "");
+        return Line(body);
+    }
+
     /// <summary>A traffic target relative to ownship, in the FLARM frame (metres, + north, + east, + above).</summary>
     public sealed record FlarmTarget(TrafficTarget Target, double NorthM, double EastM, double? AboveM, double DistanceM);
 
@@ -293,6 +351,104 @@ public static class Nmea
         return Line(string.Join(',', fields));
     }
 
+    // Guidance sentences (D25): the four RB-01 itself sends while its autopilot is active
+    // (roastbeef autopilot.go), in its field layouts, so RB-01's UDP autopilot input
+    // (autopilotudp.go, the one an EFB feeds) and serial autopilots read them as from RB-01.
+    // None goes out without guidance: RB-01 would draw a path to whatever the last fields said.
+
+    /// <summary>
+    /// $GPRMB as roastbeef makeGPRMBString: status, cross-track NM (≤ 9.99), steer L/R, origin
+    /// and destination IDs, destination lat/lon, range NM, true bearing, closing speed kt, and
+    /// the arrival alarm (A inside 500 m). RB-01's UDP input builds its path and HSI target
+    /// from this one alone.
+    /// </summary>
+    public static string? Gprmb(Guidance? g)
+    {
+        if (g is null) return null;
+        var (lat, ns) = LatLon(g.ToLatDeg, true);
+        var (lon, ew) = LatLon(g.ToLonDeg, false);
+        string body = string.Join(',', "GPRMB", "A", Num(g.XtkNm, 2), g.Steer,
+            WaypointId(g.FromId), WaypointId(g.ToId), lat, ns, lon, ew,
+            Num(Units.MToNm(g.DistanceM), 1), Deg(g.BearingTrueDeg, 1),
+            Num(g.ClosingMps is double c ? Units.MpsToKt(c) : null, 1), g.Arrived ? "A" : "V");
+        return Line(body);
+    }
+
+    /// <summary>
+    /// $GPAPB as roastbeef makeGPAPBString: cross-track and steer, arrival circle entered,
+    /// perpendicular passed, the leg course origin → destination, the destination, then the
+    /// bearing to it twice (bearing and heading to steer). Every angle true, tagged T, as
+    /// roastbeef does.
+    /// </summary>
+    public static string? Gpapb(Guidance? g)
+    {
+        if (g is null) return null;
+        string body = string.Join(',', "GPAPB", "A", "A", Num(g.XtkNm, 2), g.Steer, "N",
+            g.Arrived ? "A" : "V", g.PerpendicularPassed ? "A" : "V",
+            Deg3(g.LegCourseTrueDeg), "T", WaypointId(g.ToId),
+            Deg3(g.BearingTrueDeg), "T", Deg3(g.BearingTrueDeg), "T");
+        return Line(body);
+    }
+
+    /// <summary>
+    /// $GPBOD as roastbeef makeGPBODString: the leg course true, and magnetic when the sim gives
+    /// the variation (roastbeef leaves it empty: it has none), destination, origin.
+    /// </summary>
+    public static string? Gpbod(Guidance? g)
+    {
+        if (g is null) return null;
+        string mag = g.MagvarDeg is double mv ? Deg(g.LegCourseTrueDeg - mv, 1) : "";
+        string body = string.Join(',', "GPBOD", Deg(g.LegCourseTrueDeg, 1), "T", mag, "M",
+            WaypointId(g.ToId), WaypointId(g.FromId));
+        return Line(body);
+    }
+
+    /// <summary>$GPXTE as roastbeef makeGPXTEString: the cross-track on its own.</summary>
+    public static string? Gpxte(Guidance? g) =>
+        g is null ? null : Line(string.Join(',', "GPXTE", "A", "A", Num(g.XtkNm, 2), g.Steer, "N"));
+
+    /// <summary>
+    /// A waypoint ID safe inside an NMEA field: A–Z, 0–9 and '-', at most 10 characters
+    /// (MSFS "USER WPT" becomes "USERWPT").
+    /// </summary>
+    public static string WaypointId(string? id)
+    {
+        if (string.IsNullOrWhiteSpace(id)) return "";
+        var sb = new StringBuilder(10);
+        foreach (char c in id.ToUpperInvariant())
+        {
+            if (sb.Length == 10) break;
+            if (c is >= 'A' and <= 'Z' or >= '0' and <= '9' or '-') sb.Append(c);
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>An angle 0 ≤ x &lt; 360 at fixed decimals: 359.97 gives "0.0", never "360.0".</summary>
+    static string Deg(double deg, int decimals)
+    {
+        double r = Math.Round(Units.Wrap360(deg), decimals, MidpointRounding.AwayFromZero);
+        return Num(r >= 360.0 ? 0 : r, decimals);
+    }
+
+    /// <summary>roastbeef's %03.0f angle, 000–359.</summary>
+    static string Deg3(double deg) =>
+        ((int)Math.Round(Units.Wrap360(deg), MidpointRounding.AwayFromZero) % 360).ToString("000", Inv);
+
     /// <summary>The ASCII bytes of a line.</summary>
     public static byte[] Bytes(string line) => Encoding.ASCII.GetBytes(line);
+
+    /// <summary>
+    /// One UDP datagram of lines, padded with spaces to <paramref name="padTo"/> bytes when
+    /// shorter. RB-01's UDP autopilot input (roastbeef autopilotudp.go) reads every datagram into
+    /// the same 2048-byte buffer and parses the whole buffer, not the bytes received, so a datagram
+    /// shorter than the one before would hand it the older one's tail again: stale $GPRMB/$GPAPB.
+    /// Datagrams of one constant length overwrite each other completely. The padding follows the
+    /// last CRLF, so it reads as one blank line. 0 sends the lines unpadded.
+    /// </summary>
+    public static byte[] Datagram(IEnumerable<string> lines, int padTo)
+    {
+        string text = string.Concat(lines);
+        if (text.Length < padTo) text = text.PadRight(padTo);
+        return Encoding.ASCII.GetBytes(text);
+    }
 }

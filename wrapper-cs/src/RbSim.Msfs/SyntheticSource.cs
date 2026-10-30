@@ -37,6 +37,9 @@ public sealed class SyntheticSource(StateStore store, ActuatorManager actuators)
     const double AltM = 3000 * Units.FtToM;
     const double MagvarDeg = 3.0;
 
+    readonly (double Lat, double Lon) _legFrom = Offset(CenterLat, CenterLon, -2 * Units.NmToM, 0);
+    readonly (double Lat, double Lon) _legTo = Offset(CenterLat, CenterLon, 5 * Units.NmToM, 0);
+
     Thread? _thread;
     volatile bool _stop;
 
@@ -126,6 +129,20 @@ public sealed class SyntheticSource(StateStore store, ActuatorManager actuators)
                 }];
                 s.Fuel = new FuelGroup { Valid = true, TMono = now, LeftL = 45, RightL = 44 };
                 s.Elec = new ElecGroup { Valid = true, TMono = now, BusV = 13.8 };
+                // A leg from 2 NM south of the circle to 5 NM north of it, so the guidance
+                // sentences, the HSI and the path have something to show (D25).
+                s.Nav = new NavGroup
+                {
+                    Valid = true,
+                    TMono = now,
+                    FromId = "WPT01",
+                    FromLatDeg = _legFrom.Lat,
+                    FromLonDeg = _legFrom.Lon,
+                    ToId = "WPT02",
+                    ToLatDeg = _legTo.Lat,
+                    ToLonDeg = _legTo.Lon,
+                    ToAltMslM = AltM,
+                };
                 PublishCockpit(s, now);
             }, newFrame: true);
             store.Status.Frames.Tick(now);

@@ -6,6 +6,97 @@ link the replacement.
 
 ## Decisions
 
+### D25 — Autopilot guidance sentences from the sim GPS, for RB-01's path and HSI (proposed, 2026-10-29)
+- **Request** (maintainer): support the autopilot guidance NMEA sentences, so that RB-01
+  draws the path and the HSI.
+- **What RB-01 already reads.** RB-01 has a UDP autopilot input (roastbeef
+  `autopilotudp.go`, settings `AutopilotUdp_Enabled`/`AutopilotUdp_Port`, default 1234).
+  It was built for EFBs such as Easy VFR. From each `$GPRMB` it stores a two-point plan
+  (the aircraft, then the waypoint). The HSI plate steers to that plan, synthview and the
+  map draw it, and RB-01 forwards `$GPRMB`/`$GPAPB` to its serial autopilot. It is in the
+  flight build today, so no roastbeef change is needed.
+- **Decision.**
+  - A canonical `nav` group holds the sim GPS's active leg: next waypoint, plus the
+    previous one when valid. In MSFS it comes from the `GPS WP NEXT/PREV *` variables
+    (RB-SIM-MSF-150).
+  - `Guidance` computes RB-01's quantities from positions only, with roastbeef's geometry
+    and signs.
+  - Profile `rb01-nav` sends `$GPRMB`, `$GPAPB`, `$GPBOD` and `$GPXTE` at 1 Hz in
+    roastbeef's layouts (RB-SIM-ESP-100).
+  - New `udp` outputs (`--udp HOST[:PORT][=PROFILE]`) carry them to RB-01.
+  - The HMI the C# wrapper serves gets the same leg on `/autopilot`, both the socket and
+    `GET` (RB-SIM-HMI-060).
+- **Why not RB-SIM-IF (D16).** The contract has no navigation group, and the RB-01 SIM hub
+  doesn't exist yet. The UDP input works with RB-01 as it is. A `nav` group in RB-SIM-IF
+  can replace this once `siminput*.go` exists. `SimState.nav` is already the source for
+  that.
+- **Exceptions to the standing rules, to accept:**
+  - **Rule 1 (SIM annunciation):** a flight-build RB-01 shows the sim's leg with no SIM
+    annunciation, because the input already exists there. As in D24, no flight code
+    changes and the exposure is a display. The intended target is still a `stratuxrun-sim`
+    RB-01, whose position also comes from the sim. A flight build would mix the sim's leg
+    with its real GPS position. This is the same question Q18 asks for RB-09.
+  - **RB-01 keeps the last leg** when the wrapper stops sending (no guidance, stale data).
+    That is how its UDP input treats an EFB that stops. The wrapper can't fix it from the
+    outside (verify on the bench).
+- **Found in roastbeef, not changed (rule 3, STOP):**
+  - `autopilotudp.go` parses its whole 2048-byte buffer (`string(p)`), not the `n` bytes
+    received. A shorter datagram therefore replays the tail of the previous one, including
+    stale `$GPAPB` lines, which also go to the serial autopilot. The wrapper pads every
+    datagram to one length (`pad_bytes`, default 1024). The fix in roastbeef is
+    `string(p[:n])`.
+  - Its UDP path sets `Active = false`, so the PFD course bug (which needs `Active`) stays
+    hidden on a real RB-01. The wrapper's own HMI sets `Active` while there is guidance.
+- **Verified here (Windows 11, .NET 10.0.403):** 22 new unit tests, including a
+  transcription of roastbeef's `ParseGPRMB`/`parseLatLon` reading `$GPRMB` back; 158/158
+  tests pass; `dotnet format --verify-no-changes` is clean. In an end-to-end synthetic run,
+  `--udp 127.0.0.1:<port>` delivered 1024-byte datagrams with the four sentences at 1 Hz,
+  `GET /autopilot` returned the two-point list, and `/api/status` showed `nav` and `udp`.
+- **Not verified:** a real RB-01 drawing the leg; whether MSFS avionics packages keep the
+  `GPS WP *` variables current (L1, test machine); MSFS's direct-to `PREV` behaviour.
+
+### D24 — An `rb09` device profile speaks RB-09's own sentences (accepted, 2026-10-29)
+- **Request** (maintainer): an RB-09 connected to the C# wrapper rejected `$RBATT`.
+- **Cause: two sentences share the name `$RBATT`.**
+  - RB-SIM-ESP-020's has 7 fields (pitch first, then a status). It is meant for a future
+    `RB_ENABLE_SIM` build.
+  - rb-esp `RB09_Slave.c` parses the `$RBATT` an RB-02 prints with its NMEA output on. It has
+    17 fields: roll first, then the acceleration and the gyro. rb-esp `134b06d` (#127)
+    added it before §4.4 was written, and §4.4 missed it.
+  - RB-09 also reads `$RBAIR`, not `$RBADC`.
+  - Fed through the real `RB09_Slave_ParseData()` on the host, and replayed into an RB-09
+    (firmware 1.8.0) at the `rb02` rates: every RB-SIM-IF `$RBATT` is rejected and `$RBADC`
+    is ignored. The attitude stays frozen, and the air data goes INOP after 3 s.
+- **Decision: the wrapper adapts, not the firmware.** Profile `rb09` sends RB-09's layout
+  (protocol §4.4, new RB-SIM-ESP-090), so an RB-09 that is already flashed works without a
+  reflash. `Sentence.RbattSlave` and `Sentence.Rbair`; the rate keys are `rbattslave` and
+  `rbair`.
+- **Mapping,** read from rb-esp's screen code:
+  - yaw is −true heading, because the card shows −yaw and the turn needle differentiates
+    it;
+  - the acceleration is the g load at the ball angle, so the G-meter shows the g load;
+  - the gyro is 0, because RB-09 reads none;
+  - pitch and roll keep the §2.1 signs.
+- **Bench, 2026-10-29,** RB-09 2.8″, firmware 1.8.0, over USB from Linux:
+  - The test vectors were streamed at the `rb09` rates. Every RB-09 echo (its own NMEA
+    output) matched the vectors at 10 Hz, without a crash.
+  - A right, nose-up, slipping standard-rate turn showed bank right, nose up, turn needle
+    right, ball right, and a heading card that increases. 3000 ft at QNH 1013, +500 ft/min
+    and 100 kt read correctly.
+  - `rb-esp/test/device/rb09_slave.py` is the device harness.
+  - The C# wrapper ran on Linux (`--source synthetic --serial /dev/ttyACM0=rb09`). The RB-09
+    followed it: its own echo matched the sent attitude, QNH and VS within one tick.
+    `dotnet format --verify-no-changes`, the Release build and the tests are clean (.NET 10.0.403).
+  - With the default DTR and RTS off, opening the port reset the RB-09 once; with
+    `"dtr": true` it did not (rb-knowledge-base, USB-Serial-JTAG control lines).
+- **Exceptions to the standing rules, accepted for RB-09:**
+  - **Rule 1 (SIM annunciation):** RB-09 runs flight firmware and cannot tell the wrapper
+    from an RB-02 master, so it shows sim data with **no SIM annunciation**. No firmware code
+    changes, so no flight build parses sim input; the exposure is a display, not code. See
+    Q18.
+  - **The sim's QNH reaches an RB device.** RB-09 adopts its master's QNH, and `$RBAIR`
+    makes it mandatory. With no QNH, no `$RBAIR` goes out and RB-09 shows INOP.
+
 ### D23 — The C# wrapper answers the HMI's REST calls and keeps the addons bridge (accepted, 2026-10-29)
 - **Request** (maintainer): add the REST answers D22 left out, so the HMI at `/RB-01/`
   stops failing on them.
@@ -432,6 +523,8 @@ link the replacement.
 
 | # | Question | Blocks |
 |---|---|---|
+| Q18 | **RB-09 and the SIM annunciation (D24):** fed by the `rb09` profile, RB-09's flight firmware shows sim data with no SIM label. Accept that for RB-09, as a remote display that cannot know its source, or give RB-09 a `-SIM-` template with the annunciation, as T4.2 does for RB-02? | — |
+| Q17 | **Rename the RB-SIM-IF `$RBATT`?** RB-02 already prints a different `$RBATT` (the one RB-09 parses, D24). If T4.1 implements RB-SIM-ESP-020 as specified, an RB-02 SIM build would print one `$RBATT` layout and parse another. A new name such as `$RBSAT` costs a wrapper rename now, while no firmware parses it. | T4.1 |
 | Q16 | **Pure-protocol SimConnect client (R2):** may it be written using node-simconnect (LGPL-3.0) as a *reference*, or must it be clean-room, from captures of the official DLL's traffic on the test machine? LGPL code can't be copied into a dual-licensed (commercial) product. A third option keeps node-simconnect unmodified as a separate sidecar process. | **standalone builds' MSFS support** (T2.6) |
 | Q15 | **AGPL + proprietary DLL:** the bridge loads Microsoft's `SimConnect.dll` at runtime. Should XIAPROJECTS add an AGPL section 7 additional permission ("linking exception") for the SimConnect client library to `LICENSE`/README, as GPL projects that link proprietary platform SDKs often do? This is a legal decision for the copyright holder. | T2.3 |
 | Q14 | **`SimConnect.dll` redistribution:** no official statement found. Two devsupport threads ask the same question and have no Microsoft answer (2026-10-26). Should XIAPROJECTS ask through devsupport? Until there's an answer, users install the MSFS SDK and the bridge finds the DLL (RB-SIM-MSF-010). | M8 bundle |

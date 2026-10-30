@@ -140,6 +140,58 @@ public class NmeaTests
         Assert.Equal("RBADC,98.4,1013.3,-250,12.0,1", Body(Nmea.Rbadc(Frames.Mapped(now: 100, raw: raw), 100.1)));
     }
 
+    // Covers: RB-SIM-ESP-090
+    // rb-esp's RB09_Slave_ParseData() accepts both lines; RB09_Slave_Loop() then shows roll
+    // −15.3, pitch 2.1, heading card 271, 1.03 g, QNH 1017 hPa and 3270 ft.
+    [Fact]
+    public void RbattSlaveAndRbairInTheLayoutRb09Parses()
+    {
+        var s = Frames.Mapped(now: 100);
+        // Yaw is −true heading, the acceleration 1.03 g at the 1.0° ball, the gyro zero
+        Assert.Equal("$RBATT,-15.30,2.10,-271.40,1.030,-0.018,0.000,0.00,0.00,0.00,,,,,,,,*41\r\n", Nmea.RbattSlave(s, 100.1));
+        // Static 908.0 hPa and QNH 1017.0 hPa in inHg, OAT, VS ft/min, IAS km/h, no wind
+        Assert.Equal("$RBAIR,26.8132,30.03199,12.0,-250,182.2,,*7B\r\n", Nmea.Rbair(s, 100.1));
+    }
+
+    // Covers: RB-SIM-ESP-090
+    [Fact]
+    public void RbattSlaveAndRbairStopWhenStaleOrUnknown()
+    {
+        var s = Frames.Mapped(now: 100);
+        Assert.Null(Nmea.RbattSlave(s, 100.6));
+        Assert.Null(Nmea.Rbair(s, 101.5));
+        s.Att.SlipDeg = null;
+        s.Air.SimQnhPa = null;
+        Assert.Null(Nmea.RbattSlave(s, 100.1));
+        Assert.Null(Nmea.Rbair(s, 100.1));
+    }
+
+    // Covers: RB-SIM-ESP-090
+    // RB-02's heading card shows −yaw, truncated, so −271.40 reads 271
+    [Theory]
+    [InlineData(0, "0.00")]
+    [InlineData(90, "-90.00")]
+    [InlineData(271.4, "-271.40")]
+    [InlineData(359.999, "-360.00")]
+    public void RbattSlaveYawIsMinusTheTrueHeading(double hdg, string yaw)
+    {
+        var s = Frames.Mapped(now: 100);
+        s.Att.HdgTrueDeg = hdg;
+        Assert.Equal(yaw, Body(Nmea.RbattSlave(s, 100.1)!).Split(',')[3]);
+    }
+
+    // Covers: RB-SIM-ESP-090
+    // RB-02 draws the turn-slip ball at −120 px × accel y: ball right needs y negative
+    [Fact]
+    public void RbattSlaveBallRightIsNegativeLateralAcceleration()
+    {
+        var s = Frames.Mapped(now: 100);
+        s.Att.SlipDeg = 5;
+        s.Att.GLoad = 1;
+        var accel = Body(Nmea.RbattSlave(s, 100.1)!).Split(',')[4..7].ToList();
+        Assert.Equal(["0.996", "-0.087", "0.000"], accel);
+    }
+
     static SimState WithTraffic(params (double north, double east, double altM, int id)[] targets)
     {
         var s = Frames.Mapped(now: 100);
@@ -278,5 +330,24 @@ public class NmeaTests
         for (int ms = 0; ms < 4000; ms += 10) ids.AddRange(gen.Due(s, 100 + ms / 1000.0).Select(l => l[1..6]));
         Assert.Equal(20, ids.Count(i => i == "RBEMS"));
         Assert.Equal(2, ids.Count(i => i == "RBCYL"));
+    }
+
+    // Covers: RB-SIM-ESP-070, RB-SIM-ESP-090
+    [Fact]
+    public void Rb09ScheduleSendsOnlyRb09sOwnLayout()
+    {
+        var gen = new DeviceLineGenerator(DeviceProfiles.Resolve("rb09", null));
+        var s = Frames.Mapped(now: 100);
+        s.Sim.Paused = true;
+        var lines = new List<string>();
+        for (int ms = 0; ms < 1000; ms += 10) lines.AddRange(gen.Due(s, 100 + ms / 1000.0));
+        var ids = lines.Select(l => l[1..6]).ToList();
+        Assert.Equal(20, ids.Count(i => i == "RBATT"));
+        Assert.Equal(10, ids.Count(i => i == "RBAIR"));
+        Assert.Equal(5, ids.Count(i => i == "GPRMC"));
+        Assert.Equal(5, ids.Count(i => i == "GPGGA"));
+        Assert.DoesNotContain("RBADC", ids);
+        // 17 fields: never the 7-field RB-SIM-IF $RBATT, which RB-09 rejects
+        Assert.All(lines.Where(l => l[1..6] == "RBATT"), l => Assert.Equal(18, Body(l).Split(',').Length));
     }
 }

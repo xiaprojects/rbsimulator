@@ -44,9 +44,12 @@ public sealed class SerialOutputConfig
     public string Port { get; set; } = "";
     /// <summary>Irrelevant for the ESP32-S3 USB CDC console; used by real UARTs.</summary>
     public int Baud { get; set; } = 115200;
-    /// <summary>rb02, rb04, rb05, rb07 or nmea-flarm (protocol §4.4).</summary>
+    /// <summary>rb02, rb04, rb05, rb07, rb09 or nmea-flarm (protocol §4.4).</summary>
     public string Profile { get; set; } = "nmea-flarm";
-    /// <summary>Per-sentence rate overrides in Hz (gprmc, gpgga, pflau, pflaa, rbatt, rbadc, rbems, rbcyl); 0 removes one.</summary>
+    /// <summary>
+    /// Per-sentence rate overrides in Hz (gprmc, gpgga, pflau, pflaa, rbatt, rbadc, rbems, rbcyl, rbattslave, rbair,
+    /// gprmb, gpapb, gpbod, gpxte); 0 removes one.
+    /// </summary>
     public Dictionary<string, double>? Rates { get; set; }
     /// <summary>At most 10, the RB-05 store size (RB-SIM-ESP-080).</summary>
     public int MaxTraffic { get; set; } = Nmea.MaxFlarmTargets;
@@ -57,6 +60,30 @@ public sealed class SerialOutputConfig
     public bool LogDeviceOutput { get; set; } = true;
 
     public string DisplayName => string.IsNullOrWhiteSpace(Name) ? Port : Name;
+}
+
+/// <summary>
+/// One UDP target fed with device lines, by default the autopilot guidance for RB-01's UDP
+/// autopilot input (roastbeef setting AutopilotUdp_Enabled, port AutopilotUdp_Port, default 1234).
+/// </summary>
+public sealed class UdpOutputConfig
+{
+    public const int DefaultPort = 1234;
+    public const string DefaultProfile = "rb01-nav";
+
+    public string Name { get; set; } = "";
+    public bool Enabled { get; set; } = true;
+    public string Host { get; set; } = "";
+    public int Port { get; set; } = DefaultPort;
+    /// <summary>A §4.4 device profile; rb01-nav is $GPRMB, $GPAPB, $GPBOD and $GPXTE at 1 Hz.</summary>
+    public string Profile { get; set; } = DefaultProfile;
+    /// <summary>Per-sentence rate overrides in Hz, as for serial outputs; 0 removes one.</summary>
+    public Dictionary<string, double>? Rates { get; set; }
+    /// <summary>Every datagram is padded with spaces to this length; 0 = no padding (Nmea.Datagram).</summary>
+    public int PadBytes { get; set; } = 1024;
+
+    public string Target => $"{Host}:{Port}";
+    public string DisplayName => string.IsNullOrWhiteSpace(Name) ? Target : Name;
 }
 
 /// <summary>Who may write to the simulator through <c>POST /api/control</c> and the WebSocket.</summary>
@@ -84,6 +111,7 @@ public sealed class WrapperOptions
     public MsfsProfile Profile { get; } = new();
     public EmsUnits Ems { get; } = new();
     public List<SerialOutputConfig> Serial { get; } = [];
+    public List<UdpOutputConfig> Udp { get; } = [];
     public ControlOptions Control { get; } = new();
     /// <summary>RB-01 HMI folder (roastbeef <c>web/RB-01</c>) served at <c>/RB-01/</c>; null serves nothing.</summary>
     public string? Rb01WebDir { get; set; }
@@ -109,7 +137,9 @@ public sealed class WrapperOptions
           --ems-fuel l|gal            EMS fuel quantity unit (default l)
           --serial PORT[=PROFILE]     add a serial output, e.g. COM5=rb07, /dev/ttyACM0=rb07 or file:out.nmea
                                       (default profile nmea-flarm)
-          --no-control                refuse all writes to the simulator (read-only)
+          --udp HOST[:PORT][=PROFILE] add a UDP output, e.g. 192.168.10.1 for RB-01's UDP autopilot input
+                                      (default port 1234, profile rb01-nav)
+          --no-control               refuse all writes to the simulator (read-only)
           --control-remote            accept control commands from other computers too (default: this PC only)
           --rb01-web-dir PATH         serve this RB-01 HMI folder (roastbeef web/RB-01) at /RB-01/
           --list-ports                list the serial ports and exit
@@ -117,15 +147,19 @@ public sealed class WrapperOptions
 
         Device profiles (serial): rb02 ($RBATT 20 Hz, $RBADC 10 Hz, $GPRMC+$GPGGA 5 Hz),
           rb04 ($RBEMS 5 Hz, $RBCYL 0.5 Hz), rb05 ($GPRMC, $PFLAA, $PFLAU 1 Hz), rb07 (rb02 + rb05),
-          nmea-flarm ($GPRMC+$GPGGA 5 Hz, $PFLAU+$PFLAA 1 Hz).
+          rb09 (RB-09 remote display: its $RBATT 20 Hz, $RBAIR 10 Hz, $GPRMC+$GPGGA 5 Hz),
+          nmea-flarm ($GPRMC+$GPGGA 5 Hz, $PFLAU+$PFLAA 1 Hz),
+          rb01-nav (autopilot guidance from the sim GPS's active leg: $GPRMB, $GPAPB, $GPBOD, $GPXTE 1 Hz).
 
         Endpoints:
           GET /                 live status page
           GET /RB-01/           the RB-01 HMI files of --rb01-web-dir, when set
           WS  /situation /traffic /radar /ems /status
                                 the RB-01 daemon's HMI sockets, in its frame shapes, so the HMI runs on
-                                this data; /autopilot /keypad /alerts /radioStatus /gdl90 /weather
-                                are accepted and stay quiet
+                                this data; /autopilot sends the sim GPS's active leg each second;
+                                /keypad /alerts /radioStatus /gdl90 /weather are accepted and stay quiet
+          GET /autopilot        the active leg as the daemon's waypoint list (origin, destination), for
+                                the HSI and the path; POST, PUT and DELETE change nothing
           GET /addons /radio /playback /updates/available
                                 the HMI's REST calls, answered with the daemon's empty list
           GET|POST /bridge/float, WS /bridge/float/ws
@@ -193,6 +227,7 @@ public sealed class WrapperOptions
                 case "--ems-fuel-press": o.Ems.FuelPressure = Pressure(Next()); break;
                 case "--ems-fuel": o.Ems.Fuel = Volume(Next()); break;
                 case "--serial": o.Serial.Add(SerialArg(Next())); break;
+                case "--udp": o.Udp.Add(UdpArg(Next())); break;
                 case "--no-control": o.Control.Enabled = false; break;
                 case "--control-remote": o.Control.AllowRemote = true; break;
                 case "--rb01-web-dir": o.Rb01WebDir = Next(); break;
@@ -238,6 +273,7 @@ public sealed class WrapperOptions
             if (ems.Fuel is not null) Ems.Fuel = Volume(ems.Fuel);
         }
         if (f.Serial is not null) Serial.AddRange(f.Serial);
+        if (f.Udp is not null) Udp.AddRange(f.Udp);
         if (f.Control is { } c)
         {
             if (c.Enabled is bool en) Control.Enabled = en;
@@ -278,6 +314,45 @@ public sealed class WrapperOptions
             }
             s.MaxTraffic = Math.Clamp(s.MaxTraffic, 0, Nmea.MaxFlarmTargets);
         }
+        var targets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        for (int i = 0; i < Udp.Count; i++)
+        {
+            var u = Udp[i];
+            if (!u.Enabled) continue;
+            string where = $"udp[{i}] ({u.DisplayName})";
+            if (string.IsNullOrWhiteSpace(u.Host)) throw new ArgumentException($"{where}: host is required");
+            if (u.Port is < 1 or > 65535) throw new ArgumentException($"{where}: port out of range: {u.Port}");
+            if (!targets.Add(u.Target)) throw new ArgumentException($"{where}: {u.Target} is used twice");
+            try
+            {
+                DeviceProfiles.Resolve(u.Profile, u.Rates);
+            }
+            catch (ArgumentException ex)
+            {
+                throw new ArgumentException($"{where}: {ex.Message}");
+            }
+            u.PadBytes = Math.Clamp(u.PadBytes, 0, 2048); // RB-01's receive buffer
+        }
+    }
+
+    /// <summary>HOST[:PORT][=PROFILE]; an IPv6 host goes in brackets, [::1]:1234.</summary>
+    static UdpOutputConfig UdpArg(string v)
+    {
+        var u = new UdpOutputConfig();
+        int eq = v.LastIndexOf('=');
+        if (eq > 0)
+        {
+            u.Profile = v[(eq + 1)..];
+            v = v[..eq];
+        }
+        int colon = v.LastIndexOf(':');
+        if (colon > 0 && (v[0] != '[' || v[colon - 1] == ']'))
+        {
+            u.Port = int.Parse(v[(colon + 1)..], CultureInfo.InvariantCulture);
+            v = v[..colon];
+        }
+        u.Host = v.Trim('[', ']');
+        return u;
     }
 
     static SerialOutputConfig SerialArg(string v)
@@ -319,6 +394,7 @@ public sealed class WrapperOptions
         public AircraftSection? Aircraft { get; set; }
         public EmsSection? Ems { get; set; }
         public List<SerialOutputConfig>? Serial { get; set; }
+        public List<UdpOutputConfig>? Udp { get; set; }
         public ControlSection? Control { get; set; }
         public string? Rb01WebDir { get; set; }
     }

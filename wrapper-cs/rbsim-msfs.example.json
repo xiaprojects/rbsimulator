@@ -41,7 +41,9 @@
   //   rb05        $GPRMC, $PFLAU, $PFLAA 1 Hz
   //   rb04        $RBEMS 5 Hz, $RBCYL every 2 s           (RB-04 EMS-USB firmware)
   //   rb07        rb02 + rb05
-  // "rates" overrides a sentence rate in Hz (gprmc, gpgga, pflau, pflaa, rbatt, rbadc, rbems, rbcyl); 0 removes it.
+  //   rb09        RB-09's own $RBATT 20 Hz, $RBAIR 10 Hz, $GPRMC+$GPGGA 5 Hz (today's RB-09 firmware)
+  // "rates" overrides a sentence rate in Hz (gprmc, gpgga, pflau, pflaa, rbatt, rbadc, rbems, rbcyl,
+  // rbattslave, rbair); 0 removes it.
   // A port "file:capture.nmea" writes the same lines to a file instead.
   "serial": [
     {
@@ -51,7 +53,8 @@
       "profile": "nmea-flarm",
       "baud": 115200,             // irrelevant for the ESP32-S3 USB console
       "max_traffic": 10,          // RB-05 holds at most 10 targets
-      "dtr": false,               // ESP32 auto-reset reacts to DTR/RTS: keep off unless needed
+      "dtr": false,               // ESP32 auto-reset reacts to DTR/RTS: keep off unless needed;
+                                  // on Linux an ESP32-S3 USB console resets on open unless true
       "rts": false,
       "log_device_output": true
     },
@@ -61,6 +64,22 @@
       "port": "file:capture.nmea",
       "profile": "rb07",
       "rates": { "rbatt": 10 }
+    }
+  ],
+
+  // UDP targets. rb01-nav is the autopilot guidance from the sim GPS's active leg ($GPRMB,
+  // $GPAPB, $GPBOD, $GPXTE 1 Hz) for RB-01's UDP autopilot input: turn on "Autopilot UDP" on
+  // RB-01 (port 1234 by default) and it draws the path and the HSI. Any serial profile works
+  // here too. pad_bytes pads each datagram with spaces to one length, which RB-01's UDP input
+  // needs (see README); 0 turns it off.
+  "udp": [
+    {
+      "name": "RB-01 autopilot",
+      "enabled": false,
+      "host": "192.168.10.1",
+      "port": 1234,
+      "profile": "rb01-nav",
+      "pad_bytes": 1024
     }
   ]
 }

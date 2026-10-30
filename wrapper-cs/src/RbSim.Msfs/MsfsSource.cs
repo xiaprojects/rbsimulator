@@ -292,7 +292,7 @@ public sealed class MsfsSource(StateStore store, WrapperOptions options, Actuato
         var layout = _layouts[Def.User];
         if (!BlockMatches(layout, defineCount, block, "user")) return;
         _userObjectId = objectId;
-        layout.Decode(block, out var raw, out _);
+        layout.Decode(block, out var raw, out var str);
 
         _lastFrame = now;
         _link.OnFrame(now);
@@ -309,7 +309,7 @@ public sealed class MsfsSource(StateStore store, WrapperOptions options, Actuato
         int seq = _teleport.Seq;
         store.Update(s =>
         {
-            MsfsMap.ApplyUser(s, raw, now, options.Profile);
+            MsfsMap.ApplyUser(s, raw, now, options.Profile, str);
             s.Sim.TeleportSeq = seq;
             s.Sim.Connected = connected;
             s.Sim.Paused = paused;

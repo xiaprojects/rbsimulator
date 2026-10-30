@@ -145,8 +145,13 @@ COM ports, or `/dev/tty*` on Linux.
 | `rb04` | `$RBEMS` 5 Hz, `$RBCYL` every 2 s | RB-04 EMS-USB (`RB_ENABLE_EMS`) |
 | `rb05` | `$GPRMC`, `$PFLAA`, `$PFLAU` 1 Hz | RB-05 WIRED-USB |
 | `rb07` | `rb02` + `rb05` | RB-07 USB, SIM build for the attitude and air data |
+| `rb09` | RB-09's own `$RBATT` 20 Hz, `$RBAIR` 10 Hz, `$GPRMC`+`$GPGGA` 5 Hz | RB-09 remote display, today's firmware (`RB_ENABLE_SLAVE_DEVICE`). Not `rb02`: RB-09 rejects that `$RBATT` (protocol §4.4, D24) |
+
+| `rb01-nav` | `$GPRMB`, `$GPAPB`, `$GPBOD`, `$GPXTE` 1 Hz | RB-01's UDP autopilot input (the `udp` outputs, [below](#autopilot-guidance-path-and-hsi-d25)), or a serial autopilot |
 
 - `rates` overrides one sentence rate in Hz. Setting a rate to 0 removes that sentence.
+  The RB-09 sentences are `rbattslave` and `rbair`; the guidance sentences are `gprmb`,
+  `gpapb`, `gpbod` and `gpxte`.
 - `port: "file:capture.nmea"` writes the same lines to a file, for checking without
   hardware.
 - An unplugged device is retried every 2 s.
@@ -195,9 +200,11 @@ Still unverified:
 - **Firmware finding, not changed here:** the RB-02 mini parsers don't handle a `-` sign
   correctly. `-3.0` is read as `-7.0`, so a GGA altitude below sea level is misread. It
   is affected by the same bug with roastbeef's output; report it to the rb-esp maintainer.
-- Whether the ESP32-S3 USB console needs DTR asserted. Both control lines default off
-  because of the auto-reset circuit.
-- Behaviour on a real device: no RB device is connected to this PC.
+- Whether DTR/RTS reset an ESP32-S3 **on Windows**. On Linux, checked with an RB-09
+  (D24): it receives with DTR off or on, but opening the port with both lines off resets
+  it once, so set `"dtr": true` on that output ([rb-knowledge-base](../docs/rb-knowledge-base.md)).
+- Behaviour on a real device, except an RB-09 on profile `rb09`. On Linux it followed the
+  synthetic source: attitude, QNH and VS read back from its own NMEA output (D24).
 
 ## RB-01 HMI at /RB-01
 
@@ -241,9 +248,10 @@ after `POST /sim/state`.
 | `/ems` | the EMS map: every key of the contract's `ems` group, in `ems.json` units | 2 Hz |
 | `/status` | the `globalStatus` fields the HMI reads; `Version` ends in `-SIM` | 1 Hz |
 | `/bridge/float/ws` | the addons bridge map, when it changes ([below](#the-hmis-rest-calls-d23)) | checked at 5 Hz |
-| `/autopilot`, `/keypad`, `/alerts`, `/radioStatus`, `/gdl90`, `/weather` | none: accepted and quiet, as the daemon's are while nothing happens | — |
+| `/autopilot` | `AutopilotStatus` from the sim GPS's active leg ([below](#autopilot-guidance-path-and-hsi-d25)) | 1 Hz |
+| `/keypad`, `/alerts`, `/radioStatus`, `/gdl90`, `/weather` | none: accepted and quiet, as the daemon's are while nothing happens | — |
 
-A plain HTTP request to one of these paths gets 404.
+A plain HTTP request to one of these paths gets 404, except `/autopilot` (below).
 
 **Stale data never looks valid** (RB-SIM-SAF-050). The HMI believes every frame: the PFD
 altitude and speed tapes read `GPSAltitudeMSL`, `BaroPressureAltitude` and
@@ -322,6 +330,71 @@ The differences from the daemon:
   logs the error and answers 200.
 - **A post from a browser page of another origin is refused with 403,** as for
   `/api/control`.
+
+## Autopilot guidance, path and HSI (D25)
+
+The sim GPS's active leg (the waypoint it flies to, and the one it comes from) becomes the
+lateral guidance RB-01's autopilot computes. RB-01 draws the path and the HSI from it, in
+two ways:
+
+- **A real RB-01, over UDP.** The `rb01-nav` profile sends `$GPRMB`, `$GPAPB`, `$GPBOD`
+  and `$GPXTE` at 1 Hz, in roastbeef `autopilot.go`'s layouts, to RB-01's UDP autopilot
+  input. That is the input an EFB such as Easy VFR feeds (`autopilotudp.go`). On RB-01,
+  turn on *Autopilot UDP* (`AutopilotUdp_Enabled`); the port is `AutopilotUdp_Port`,
+  default 1234. Then:
+
+  ```
+  rbsim-msfs --udp 192.168.10.1          # RB-01's address; port 1234, profile rb01-nav
+  ```
+
+  or in the configuration file:
+
+  ```json
+  "udp": [ { "name": "RB-01 autopilot", "host": "192.168.10.1", "port": 1234, "profile": "rb01-nav" } ]
+  ```
+
+  From each `$GPRMB`, RB-01 stores a two-point plan (the aircraft, then the waypoint).
+  The HSI plate steers to it, and synthview and the map draw it. RB-01 also forwards
+  `$GPRMB` and `$GPAPB` to its own serial autopilot output.
+- **The HMI the wrapper serves at `/RB-01/`.** `WS /autopilot` sends `AutopilotStatus`
+  every second. `GET /autopilot` returns the daemon's waypoint list: the origin (past),
+  then the destination (target). The HSI plate and the path read that list. `Active` is
+  true while there is guidance, so the PFD course bug and the steer arrow show.
+
+What the guidance is:
+
+- It is computed from positions only, as roastbeef does (`Guidance`):
+  - great-circle distance and bearing to the waypoint;
+  - the leg course, origin to waypoint;
+  - the cross-track from that line, + right of course, so the steer is L;
+  - the closing speed, the ground speed along the bearing;
+  - arrival inside 500 m.
+
+  The sim's cross-track and desired-track SimVars are not used, because their signs and
+  magnetic references are unverified. `$GPBOD` adds the magnetic course from the sim's
+  variation; roastbeef leaves that field empty.
+- With no active waypoint, or with a stale position or leg, **nothing is sent** and the
+  HMI gets the daemon's idle frame and an empty list. Over UDP, RB-01 keeps showing the
+  last leg it received. That is how its UDP input treats an EFB that stops (verify on the
+  bench).
+- A leg without an origin is flown as a direct-to from the aircraft: the course is the
+  bearing and the cross-track is 0.
+- The HMI's own autopilot commands change nothing here, because the sim's GPS owns the
+  plan: `POST` (load a plan), `PUT` (start) and `DELETE` (stop) on `/autopilot` get the
+  daemon's `[]`.
+- `/api/status` shows the leg under `nav` and each UDP target under `udp`.
+
+**Datagram padding.** RB-01's UDP input reads each datagram into one reused 2048-byte
+buffer and parses the whole buffer, not just the bytes received. A shorter datagram would
+therefore hand it the tail of the previous one again. To prevent that, every datagram is
+padded with spaces to `pad_bytes` (default 1024). The fix belongs in roastbeef
+(`string(p[:n])`); after that, `"pad_bytes": 0` turns the padding off.
+
+**The MSFS variables** are `GPS IS ACTIVE WAY POINT`, `GPS WP NEXT LAT/LON/ALT/ID`, and
+`GPS WP PREV VALID/LAT/LON/ID`. These are the SDK's GPS variables. Whether every avionics
+package keeps them current is **not verified**: the WT G1000 NXi, G3X, GNS 430/530 and
+MSFS 2024's own may not. Check each one on the test machine with a flight plan and a
+direct-to.
 
 ## Radio and control API
 

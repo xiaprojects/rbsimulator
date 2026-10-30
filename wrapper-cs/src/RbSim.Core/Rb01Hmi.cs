@@ -255,6 +255,94 @@ public sealed class Rb01Hmi
         };
     }
 
+    // roastbeef autopilot.go WAYPOINT_STATUS_*.
+    const int WaypointTarget = 1, WaypointPast = 2;
+
+    /// <summary>
+    /// The <c>/autopilot</c> frame, AutopilotStatus, from the sim GPS's active leg (D25): what
+    /// the daemon sends each second while its autopilot is active. <c>Active</c> is true while
+    /// there is guidance, so the HMI shows the steer arrow and the PFD course bug; without it,
+    /// the daemon's idle state. GPRMBData's Vnav is left out: no plate reads it.
+    /// </summary>
+    public static JsonObject Autopilot(SimState s, double now)
+    {
+        var g = Guidance.Compute(s, now);
+        if (g is null)
+        {
+            return new JsonObject
+            {
+                ["Active"] = false,
+                ["To"] = Waypoint(0, 0, 0, 0, ""),
+                ["GPRMB"] = new JsonObject
+                {
+                    ["Status"] = "V",
+                    ["XTRKDistance"] = 0,
+                    ["Steer"] = "L",
+                    ["WaypointStart"] = "",
+                    ["WaypointDest"] = "",
+                    ["Lat"] = 0,
+                    ["Lon"] = 0,
+                    ["Distance"] = 0,
+                    ["TrueBearing"] = 0,
+                    ["Knots"] = 0,
+                    ["Arrived"] = "V",
+                    ["LegCourse"] = 0,
+                    ["NextLegTrue"] = 0,
+                    ["HasNextLeg"] = false,
+                    ["IsLastWaypoint"] = false,
+                },
+            };
+        }
+        return new JsonObject
+        {
+            ["Active"] = true,
+            ["To"] = Leg(s, g)[^1]!.DeepClone(),
+            ["GPRMB"] = new JsonObject
+            {
+                ["Status"] = "A",
+                ["XTRKDistance"] = Math.Round(g.XtkNm, 2),
+                ["Steer"] = g.Steer,
+                ["WaypointStart"] = Nmea.WaypointId(g.FromId),
+                ["WaypointDest"] = Nmea.WaypointId(g.ToId),
+                ["Lat"] = g.ToLatDeg,
+                ["Lon"] = g.ToLonDeg,
+                ["Distance"] = Math.Round(Units.MToNm(g.DistanceM), 2),
+                ["TrueBearing"] = Math.Round(g.BearingTrueDeg, 1),
+                ["Knots"] = g.ClosingMps is double c ? Math.Round(Units.MpsToKt(c), 1) : 0,
+                ["Arrived"] = g.Arrived ? "A" : "V",
+                ["LegCourse"] = Math.Round(g.LegCourseTrueDeg, 1),
+                // The sim GPS variables give one leg, not the next one.
+                ["NextLegTrue"] = 0,
+                ["HasNextLeg"] = false,
+                ["IsLastWaypoint"] = false,
+            },
+        };
+    }
+
+    /// <summary>
+    /// <c>GET /autopilot</c>, the daemon's waypoint list: the leg as RB-01 stores it from a
+    /// $GPRMB on its UDP input, origin (past) then destination (target). The HSI plate steers to
+    /// the last one, synthview and the map draw the line. Without an origin the leg starts at
+    /// the aircraft, as on RB-01. Ele is feet: the plan's altitude, or the aircraft's when the
+    /// plan gives none. Empty without guidance.
+    /// </summary>
+    public static JsonArray Waypoints(SimState s, double now) =>
+        Guidance.Compute(s, now) is { } g ? Leg(s, g) : [];
+
+    static JsonArray Leg(SimState s, Guidance g)
+    {
+        int ownFt = s.Pos.AltMslM is double a ? (int)Math.Round(Units.MToFt(a)) : 0;
+        int toFt = g.ToAltMslM is double ta ? (int)Math.Round(Units.MToFt(ta)) : ownFt;
+        return
+        [
+            Waypoint(g.FromLatDeg ?? s.Pos.LatDeg!.Value, g.FromLonDeg ?? s.Pos.LonDeg!.Value, ownFt, WaypointPast, Nmea.WaypointId(g.FromId)),
+            Waypoint(g.ToLatDeg, g.ToLonDeg, toFt, WaypointTarget, Nmea.WaypointId(g.ToId)),
+        ];
+    }
+
+    static JsonObject Waypoint(double lat, double lon, int eleFt, int status, string cmt) =>
+        new() { ["Lat"] = lat, ["Lon"] = lon, ["Ele"] = eleFt, ["Status"] = status, ["Cmt"] = cmt };
+
     /// <summary>Initial great-circle bearing, degrees true 0–360.</summary>
     public static double BearingDeg(double lat1, double lon1, double lat2, double lon2)
     {

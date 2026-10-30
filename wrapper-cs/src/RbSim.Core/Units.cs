@@ -35,9 +35,12 @@ public static class Units
     public const double PsiToPa = 6894.757293168;
     public const double HPaToPa = 100.0;
     public const double BarToPa = 100000.0;
+    public const double NmToM = 1852.0;
 
     public static double MToFt(double m) => m / FtToM;
+    public static double MToNm(double m) => m / NmToM;
     public static double MpsToKt(double mps) => mps / KtToMps;
+    public static double MpsToKmh(double mps) => mps * 3.6;
     public static double MpsToFps(double mps) => mps / FtToM;
     public static double MpsToFpm(double mps) => mps / FtToM * 60.0;
     public static double PaToInHg(double pa) => pa / InHgToPa;

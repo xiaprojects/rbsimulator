@@ -83,7 +83,10 @@ public sealed class AirGroup : Group
     public double? StaticPa { get; set; }
     public double? VsBaroMps { get; set; }
     public double? OatC { get; set; }
-    /// <summary>The sim's own altimeter setting; information only, never pushed to RB knobs.</summary>
+    /// <summary>
+    /// The sim's own altimeter setting; information only, never pushed to RB knobs. The one
+    /// exception is RB-09's $RBAIR: a remote display follows its master's QNH (D24).
+    /// </summary>
     public double? SimQnhPa { get; set; }
 }
 
@@ -131,6 +134,24 @@ public sealed class ApGroup : Group
     public bool? VsHold { get; set; }
     public double? VsSelMps { get; set; }
     public bool? NavMode { get; set; }
+}
+
+/// <summary>
+/// The sim GPS's active leg (protocol §2.2 <c>nav</c>): the waypoint it is flying to and the
+/// one it comes from. The guidance sentences and RB-01's path and HSI are computed from it and
+/// the ownship position (<see cref="Guidance"/>). Valid only while a waypoint is active.
+/// </summary>
+public sealed class NavGroup : Group
+{
+    public string ToId { get; set; } = "";
+    public double? ToLatDeg { get; set; }
+    public double? ToLonDeg { get; set; }
+    /// <summary>The plan's altitude at the waypoint; null when the plan gives none.</summary>
+    public double? ToAltMslM { get; set; }
+    public string FromId { get; set; } = "";
+    /// <summary>Null when the leg has no origin (a direct-to the sim reports without one).</summary>
+    public double? FromLatDeg { get; set; }
+    public double? FromLonDeg { get; set; }
 }
 
 /// <summary>Radio stack read-back (protocol §2.2 <c>radio</c>, R2). Frequencies in Hz.</summary>
@@ -189,6 +210,7 @@ public sealed class SimState
     public FuelGroup Fuel { get; set; } = new();
     public ElecGroup Elec { get; set; } = new();
     public ApGroup Ap { get; set; } = new();
+    public NavGroup Nav { get; set; } = new();
     public RadioGroup Radio { get; set; } = new();
     public ControlsGroup Controls { get; set; } = new();
     public List<TrafficTarget> Traffic { get; set; } = [];

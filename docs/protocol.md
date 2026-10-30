@@ -115,6 +115,8 @@ without checking it first.
 | | `track_true_deg`, `gs_mps`, `vs_mps`, `on_ground`, `category` | | |
 | `radio` (R2) | `com1_active_hz`, `com1_standby_hz`, `nav1_active_hz`, `nav1_radial_deg`, `nav1_valid` | | |
 | `ap` | `master`, `hdg_bug_mag_deg`, `alt_sel_m`, `hdg_mode` | | the sim's own autopilot state, used as reverse-channel feedback |
+| `nav` | `to_id`, `to_lat_deg`, `to_lon_deg`, `to_alt_msl_m` | | the sim GPS's active waypoint; valid only while one is active. `to_alt_msl_m` is null when the plan gives none (D25) |
+| | `from_id`, `from_lat_deg`, `from_lon_deg` | | the leg's origin; null when the sim gives none (a direct-to is then flown from the aircraft) |
 
 ### 2.3 Validity and staleness
 
@@ -174,6 +176,8 @@ without checking it first.
 | `AUTOPILOT MASTER`, `…HEADING LOCK`, `…HEADING LOCK DIR`, `…HEADING SLOT INDEX`, `…ALTITUDE LOCK VAR` | Autopilot | bool, degrees, number, feet | same | `ap.*`, the §5 read-back | `HEADING LOCK DIR` and `ALTITUDE LOCK VAR` are settable |
 | `COM ACTIVE FREQUENCY:1`, `COM STANDBY FREQUENCY:1` | Radio Navigation | Frequency BCD16 | hertz (**L1**: confirm it converts) | `radio.*` (R2) | |
 | `NAV ACTIVE FREQUENCY:1`, `NAV RADIAL:1`, `NAV HAS NAV` | Radio Navigation | MHz, degrees, bool | same | `radio.nav1_*` (Later: RB-01 VOR addon) | |
+| `GPS IS ACTIVE WAY POINT`, `GPS WP NEXT LAT`, `…LON`, `…ALT`, `GPS WP NEXT ID` | GPS | bool, degrees, meters, string | same; ID as STRING32 | `nav.to_*`; valid only while active and not at 0,0 (RB-SIM-MSF-150) | **L1:** check that each avionics package (WT G1000 NXi, G3X, GNS 430/530, MSFS 2024) keeps them current, for a plan and a direct-to (verify) |
+| `GPS WP PREV VALID`, `GPS WP PREV LAT`, `…LON`, `GPS WP PREV ID` | GPS | bool, degrees, string | same | `nav.from_*`, kept only while `PREV VALID` | as above |
 
 **Engine 1, fuel and electrics.** The aircraft profile picks the variant.
 
@@ -709,6 +713,70 @@ $RBADC,,,,,0*4A
 and the pilot's QNH, as it does with the BMP280. Injecting pressure keeps the device's QNH
 knob, Auto-QNH and altimeter logic running unchanged.
 
+**RB-09 remote display** (RB-SIM-ESP-090, decision D24). RB-09 shows the attitude and air
+data an RB-02 master prints with its NMEA output on. Its firmware (rb-esp `RB09_Slave.c`)
+parses **a different `$RBATT`** from the one above: same name, 17 fields. It rejects the
+7-field sentence and ignores `$RBADC`. The `rb09` profile sends what RB-09 parses:
+
+`$RBATT,<roll>,<pitch>,<yaw>,<ax>,<ay>,<az>,<gx>,<gy>,<gz>,,,,,,,,*hh`
+
+| # | Field | From the sim | Decimals |
+|---|---|---|---|
+| 1, 2 | roll, pitch | roll, pitch; §2.1 signs, as RB-02's advanced attitude screen | 2 |
+| 3 | yaw | −true heading, 0 … −360: the heading card shows −yaw, the turn needle differentiates it | 2 |
+| 4–6 | accel x, y, z, g | g load at the ball angle: x = g cos(slip) (normal axis), y = −g sin(slip) (the ball sits at −120 px × y), z = 0. \|accel\| is what the G-meter shows | 3 |
+| 7–9 | gyro x, y, z, deg/s | 0: RB-09 reads none, it takes the turn rate from the yaw | 2 |
+| 10–17 | GPS acceleration, magnetometer, compass, filter beta | empty (optional) | |
+
+`$RBAIR,<static>,<qnh>,<oat>,<vs>,<ias>,,*hh`: static pressure and QNH in inHg (4 and 5
+decimals, as `RB09_Slave_FormatAir()`), OAT °C, baro VS ft/min, IAS km/h, wind empty.
+RB-09 adopts the QNH, as it follows its master's: this is the one place the sim's
+altimeter setting reaches an RB device.
+
+```
+$RBATT,-15.30,2.10,-271.40,1.030,-0.018,0.000,0.00,0.00,0.00,,,,,,,,*41
+$RBAIR,26.8132,30.03199,12.0,-250,182.2,,*7B
+```
+
+- Numbers follow `RB09_Slave.c`, which reads floats: the int16 rule of RB-SIM-ESP-010
+  doesn't apply. The checksum is mandatory, and a sentence is used whole or not at all.
+- Neither sentence goes out while its group is stale or a mandatory value is unknown, QNH
+  included. RB-09 has no status field: it shows INOP when the data stops, after 1 s for
+  attitude and 3 s for air data, with the range checks of its BMP280 path (QNH 850–1100 hPa,
+  −1000 … 12000 ft by RB-02's linear formula).
+- RB-09 runs flight firmware, not a SIM build, so it shows **no SIM annunciation** (D24).
+- The signs in the table were checked on an RB-09 screen (D24): bank right, nose up, turn
+  needle right, ball right, and a heading card that increases in a right turn.
+
+**Autopilot guidance: `$GPRMB`, `$GPAPB`, `$GPBOD`, `$GPXTE`** (RB-SIM-ESP-100, D25).
+These are the four sentences RB-01 sends while its own autopilot is active (roastbeef
+`autopilot.go`), in its field layouts. RB-01's UDP autopilot input (`autopilotudp.go`, the
+input an EFB feeds) reads them, and so do serial autopilots.
+
+```
+$GPRMB,A,0.54,R,WPT01,WPT02,4316.11342,N,01208.20044,E,5.0,6.2,99.8,V*1F
+$GPAPB,A,A,0.54,R,N,V,V,000,T,WPT02,006,T,006,T*72
+$GPBOD,0.0,T,357.0,M,WPT02,WPT01*45
+$GPXTE,A,A,0.54,R,N*71
+```
+
+- The source is `nav` plus the ownship `pos`. Distance and bearing to the waypoint are
+  great circle. The leg course runs origin → waypoint. The cross-track is the distance from
+  that great circle, + right of course, so the steer is L (roastbeef `crossTrackNM`), and
+  it pegs at 9.99 NM. The closing speed is the ground speed along the bearing. The arrival
+  alarm is A inside 500 m. In `$GPAPB`, perpendicular passed is A once the waypoint is
+  behind the leg.
+- Every angle is true and tagged T, as in roastbeef. `$GPBOD` also carries the magnetic
+  course when the sim gives the variation; roastbeef leaves that field empty.
+- Waypoint IDs keep A–Z, 0–9 and `-`, at most 10 characters.
+- With no fresh `nav` and `pos`, **none of the four goes out**. RB-01 would otherwise
+  draw a path to whatever the fields said.
+- A leg without an origin is a direct-to from the aircraft: the course is the bearing and
+  the cross-track is 0.
+- **Over UDP**, the due lines of one tick form one datagram, padded with spaces to one
+  length (default 1024 bytes). RB-01's UDP input parses its whole reused 2048-byte buffer,
+  not the bytes received, so a shorter datagram would replay the previous one's tail.
+
 **Device profiles and rates** (RB-SIM-ESP-070):
 
 | Profile | Sentences and rates |
@@ -717,6 +785,8 @@ knob, Auto-QNH and altimeter logic running unchanged.
 | `rb04` | `$RBEMS` 5 Hz, `$RBCYL` every 2 s (as RB-01 does) |
 | `rb05` | `$GPRMC` 1 Hz, `$PFLAU` 1 Hz, `$PFLAA` 1 Hz per target; **≤ 10 targets, nearest first** (the firmware store holds 10) |
 | `rb07` | `rb02` ∪ `rb05` |
+| `rb09` | RB-09's `$RBATT` 20 Hz, `$RBAIR` 10 Hz, `$GPRMC` + `$GPGGA` 5 Hz |
+| `rb01-nav` | `$GPRMB`, `$GPAPB`, `$GPBOD`, `$GPXTE` 1 Hz, RB-01's rate (for its UDP autopilot input) |
 
 `rb02` uses about 2 kB/s.
 
@@ -853,6 +923,7 @@ permanent: withdraw, never renumber. Tests declare `# Covers: <id>`. Verificatio
 | **MSF-120** | The status page shows the MSFS version, the DLL path and version, the request rates, traffic count and the last SimConnect exception, decoded | D | M2 |
 | **MSF-130** | A SimConnect exception on a data definition makes only the named datum invalid; the adapter keeps running and reports it | T | M2 |
 | **MSF-140** | The pure-protocol transport (standalone builds) passes a differential test against the DLL transport on the same sim session (same values, same rates) before it is offered | T (L11) | M2 (after Q16) |
+| **MSF-150** | The active leg maps from `GPS IS ACTIVE WAY POINT` and `GPS WP NEXT/PREV *` into `nav` (§3.1). It is valid only while a waypoint is active at a position other than 0,0, and the origin is kept only while `GPS WP PREV VALID` (D25) | T, D (L1) | — |
 | **WRP-010** | The wrapper builds from Linux, with `CGO_ENABLED=0`, for linux/amd64, linux/arm64, windows/amd64 standalone and windows/amd64 with `simconnect_sdk` (`make wrapper-all`) | T | M2 |
 | **WRP-020** | Only the SDK build contains the `SimConnect.dll` transport; standalone binaries contain no reference to it (symbol check in `make wrapper-check`) | T | M2 |
 | **WRP-030** | All builds share every source except the transport files in `internal/simconnect/`; sources use the `simconnect.Conn` interface; build tags appear nowhere else | I, T | M2 |
@@ -883,6 +954,7 @@ permanent: withdraw, never renumber. Tests declare `# Covers: <id>`. Verificatio
 | **HMI-030** | The HMI shows the SIM annunciation on every plate (hub-lite and rbsim RB-01) | D | M1, M3 |
 | **HMI-040** | The C# wrapper serves the RB-01 HMI sockets (`/situation`, `/traffic`, `/radar`, `/ems`, `/status`) in the daemon's frame shapes, built from its state message, at the §4.3 rates. A stale or invalid group goes out as the daemon's no-data state plus its invalid markers, never as the last value (D22) | T | — |
 | **HMI-050** | The C# wrapper answers the HMI's REST calls `/addons`, `/radio`, `/playback` and `/updates/available` with the daemon's empty list, and keeps the addons bridge `/bridge/float` (GET, POST, `/bridge/float/ws` on change) in memory. Nothing posted to the bridge reaches the flight data; a bad post or a foreign web origin is refused and stores nothing (D23) | T | — |
+| **HMI-060** | The C# wrapper's `/autopilot` socket sends `AutopilotStatus` from the sim GPS's active leg at 1 Hz, and `GET /autopilot` returns the daemon's waypoint list (origin past, destination target). Without guidance, the daemon's idle frame and an empty list. `POST`, `PUT` and `DELETE` change nothing (D25) | T | — |
 | **ESP-010** | Device lines follow the §4.4 line rules | T | M0, M4 |
 | **ESP-020** | `$RBATT` per §4.4 | T | M0, M4 |
 | **ESP-030** | `$RBADC` per §4.4 | T | M0, M4 |
@@ -891,6 +963,8 @@ permanent: withdraw, never renumber. Tests declare `# Covers: <id>`. Verificatio
 | **ESP-060** | hub-lite drains and logs device output and warns on a non-SIM build banner | T | M4 |
 | **ESP-070** | Device profiles and rates per §4.4, the same from RB-01 and hub-lite | T | M3, M4 |
 | **ESP-080** | At most 10 traffic targets per device, nearest first | T | M4 |
+| **ESP-090** | The `rb09` profile sends RB-09's own 17-field `$RBATT` and `$RBAIR` (§4.4), never the RB-SIM-IF `$RBATT`/`$RBADC`; nothing while stale or a mandatory value is unknown (D24) | T, D | — |
+| **ESP-100** | The guidance sentences `$GPRMB`, `$GPAPB`, `$GPBOD` and `$GPXTE` follow roastbeef `autopilot.go`'s layouts and geometry (§4.4): cross-track + right of course, pegged at 9.99 NM, arrival inside 500 m. RB-01's `ParseGPRMB` reads `$GPRMB` back. None is sent without a fresh active leg and position. UDP datagrams are padded to one length (D25) | T, D | — |
 | ~~REV-010~~ | *Withdrawn (D16): wrapper reading RB-01 NMEA on TCP :2000; intents now come in the HTTP response* | — | — |
 | **REV-020** | The wrapper's coupling mode is `off`, `bug` or `full`, default `off` (§5) | T | M5 |
 | **REV-030** | RB-01 returns `hdg_bug_mag` already converted to magnetic; the wrapper writes at most 2 Hz, with a 1° deadband, only when it differs from the read-back | T | M5 |
