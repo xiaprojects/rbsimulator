@@ -343,6 +343,17 @@ public sealed class Rb01Hmi
     static JsonObject Waypoint(double lat, double lon, int eleFt, int status, string cmt) =>
         new() { ["Lat"] = lat, ["Lon"] = lon, ["Ele"] = eleFt, ["Status"] = status, ["Cmt"] = cmt };
 
+    /// <summary>
+    /// <c>GET /settings/aircraft.json</c>: the HMI's aircraft profile with the sim aircraft's tail
+    /// number as its <c>name</c>, which the aircraft plate shows (D26). Without a tail number (no
+    /// sim yet, or the sim gives none) the profile keeps its own name.
+    /// </summary>
+    public static JsonObject Aircraft(JsonObject profile, string tail)
+    {
+        if (tail.Length > 0) profile["name"] = tail;
+        return profile;
+    }
+
     /// <summary>Initial great-circle bearing, degrees true 0–360.</summary>
     public static double BearingDeg(double lat1, double lon1, double lat2, double lon2)
     {

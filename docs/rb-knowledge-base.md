@@ -102,6 +102,13 @@ Pitot: `main/airspeed.go`.
   | `/bridge/float/ws` | addon and probe numeric bridge |
 
 - The HMI rate-limits by wall clock: `/situation` 100 ms, `/ems` 300 ms, `/status` 1 s.
+- **REST contracts the C# wrapper serves** (D26):
+
+  | Plate | Daemon side | Shape and gotchas |
+  |---|---|---|
+  | radio | `main/radio.go` `RadioStatus`; `managementinterface.go` `handleRadioRest`, `handleRadioWS` | `GET /radio` is a `RadioStatus[]`, with frequencies as `"118.100"` strings. `POST /radio/{index}` takes the radio whole, and the daemon pushes the list on `/radioStatus` after it. `radio.js` turns an empty frequency into `"118.000"` and lifts anything below 118 MHz to 118, so COM only. Its ▲/▼ pad the kHz part on the right (`padEnd`): from 122.025, ▲ MHz gives 123.250 |
+  | checklist | `main/checklist.go`; `handleChecklistRest` | `/checklist/default/status`: `GET` returns the list and `POST` replaces it whole, in memory, loaded from `/boot/firmware/checklist/default.json`. Groups `{name, text, items: [{id, name, text, value, date, dateParsed, isselected}]}`, with `value` one of `todo`/`pass`/`skip`/`fail`/`test`. `PUT` and `DELETE` are TODOs |
+  | aircraft | `handleSettingsFileRest` serves `web/settings/aircraft.json` | `name` is the tail number on the aircraft plate (`aircraft.js`). It is read once, at HMI load (`serviceaircraft.js`) |
 - Addons: `GET /addons` lists JS+HTML under `web/RB-01/addons/` and `main.js` injects them.
   This is the vehicle for the SIM banner.
 - **The JS is CRLF.** Python text-mode edits flip line endings; use binary mode.

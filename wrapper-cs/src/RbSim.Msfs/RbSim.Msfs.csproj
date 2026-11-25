@@ -33,5 +33,6 @@
   <ItemGroup>
     <!-- Beside the exe, never bundled into the single file, so users can copy and edit it. -->
     <None Include="..\..\rbsim-msfs.example.json" Link="rbsim-msfs.example.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
+    <None Include="..\..\checklist.example.json" Link="checklist.example.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
   </ItemGroup>
 </Project>

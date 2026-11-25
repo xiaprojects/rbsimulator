@@ -12,6 +12,10 @@
   // RB-01 HMI files served at /RB-01/, e.g. a roastbeef working tree, so an edit shows on the next
   // reload. A relative path is relative to the current folder. The folder must exist.
   // "rb01_web_dir": "/home/stefano/roastbeef/web/RB-01",
+  // The RB-01 checklist plate's list, in the format of RB-01's checklist/default.json. The plate's
+  // ticks live in memory until a restart, or DELETE /checklist/default/status; the file is never
+  // written. Without it the plate is empty.
+  // "checklist": "checklist.example.json",
 
   "aircraft": {
     "ball_full_scale_deg": 10,    // placeholder: verify per aircraft
@@ -26,11 +30,12 @@
     "fuel": "l"                   // l | gal
   },
 
-  // Writes to the simulator through POST /api/control and the WebSocket: radios, autopilot,
-  // the sim altimeter and cockpit controls. Each write is checked by read-back within 2 s.
+  // Writes to the simulator through POST /api/control, the WebSocket and the RB-01 HMI's radio
+  // plate (COM1/COM2, group "radio"): radios, autopilot, the sim altimeter and cockpit controls.
+  // Each write is checked by read-back within 2 s.
   "control": {
     "enabled": true,
-    "allow_remote": false,        // true lets other computers (an RB-01, a tablet) send commands
+    "allow_remote": false,        // true lets other computers (an RB-01, a tablet with the HMI) send commands
     "groups": ["radio", "autopilot", "altimeter", "controls"]
   },
 

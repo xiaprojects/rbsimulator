@@ -46,6 +46,8 @@ public sealed class SimInfo
     public DateTime? Utc { get; set; }
     public int TeleportSeq { get; set; }
     public string Aircraft { get; set; } = "";
+    /// <summary>The aircraft's tail number (MSFS ATC ID, set in the sim's aircraft options); empty when unknown.</summary>
+    public string Tail { get; set; } = "";
     public string SimName { get; set; } = "";
     public string SimVersion { get; set; } = "";
 
@@ -172,6 +174,9 @@ public sealed class RadioGroup : Group
     /// <summary>TRANSPONDER STATE: 0 off, 1 standby, 2 test, 3 on, 4 alt (verify, L1).</summary>
     public int? XpdrState { get; set; }
     public bool? XpdrIdent { get; set; }
+    /// <summary>The audio panel's transmit selection (COM TRANSMIT:n, verify, L1).</summary>
+    public bool? Com1Transmit { get; set; }
+    public bool? Com2Transmit { get; set; }
 }
 
 /// <summary>Cockpit actuator read-back: flaps, trim, gear, parking brake.</summary>

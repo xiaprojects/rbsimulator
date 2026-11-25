@@ -73,7 +73,10 @@ allow it on **private** networks only. Use `--listen 127.0.0.1` to keep the wrap
 |---|---|
 | `GET /RB-01/` | the RB-01 HMI files from `rb01_web_dir`, when set ([below](#rb-01-hmi-at-rb-01)) |
 | `WS /situation`, `/traffic`, `/radar`, `/ems`, `/status` | the RB-01 daemon's HMI sockets, in its frame shapes ([below](#the-hmi-sockets-d22)) |
-| `GET /addons`, `/radio`, `/playback`, `/updates/available`; `GET`/`POST /bridge/float`, `WS /bridge/float/ws` | the HMI's REST calls and the addons bridge ([below](#the-hmis-rest-calls-d23)) |
+| `GET /addons`, `/playback`, `/updates/available`; `GET`/`POST /bridge/float`, `WS /bridge/float/ws` | the HMI's REST calls and the addons bridge ([below](#the-hmis-rest-calls-d23)) |
+| `GET /radio`, `POST /radio/{0\|1}`, `WS /radioStatus` | the HMI's radio plate on the sim's COM1 and COM2 ([below](#radio-plate-checklist-and-tail-number-d26)) |
+| `GET`/`POST`/`DELETE /checklist/default/status` | the HMI's checklist, from the `checklist` file, in memory ([below](#radio-plate-checklist-and-tail-number-d26)) |
+| `GET /settings/aircraft.json` | the HMI's aircraft profile, named after the sim aircraft's tail number ([below](#radio-plate-checklist-and-tail-number-d26)) |
 | `GET /api/state` | RB-SIM-IF/1 state message, the body of `POST /sim/state` |
 | `GET /api/traffic` | RB-SIM-IF/1 traffic message |
 | `GET /api/simstate` | canonical `SimState`, SI, snake_case |
@@ -249,7 +252,8 @@ after `POST /sim/state`.
 | `/status` | the `globalStatus` fields the HMI reads; `Version` ends in `-SIM` | 1 Hz |
 | `/bridge/float/ws` | the addons bridge map, when it changes ([below](#the-hmis-rest-calls-d23)) | checked at 5 Hz |
 | `/autopilot` | `AutopilotStatus` from the sim GPS's active leg ([below](#autopilot-guidance-path-and-hsi-d25)) | 1 Hz |
-| `/keypad`, `/alerts`, `/radioStatus`, `/gdl90`, `/weather` | none: accepted and quiet, as the daemon's are while nothing happens | — |
+| `/radioStatus` | the radio list of COM1 and COM2 ([below](#radio-plate-checklist-and-tail-number-d26)) | on connect, on change (checked at 2 Hz), after each plate post |
+| `/keypad`, `/alerts`, `/gdl90`, `/weather` | none: accepted and quiet, as the daemon's are while nothing happens | — |
 
 A plain HTTP request to one of these paths gets 404, except `/autopilot` (below).
 
@@ -305,7 +309,6 @@ answer is the daemon's own answer when it has nothing to report:
 | Call | Answer | Why it is empty |
 |---|---|---|
 | `GET /addons` | `[]` | The addons in `RB-01/addons/` write the settings files and the magnetometer calibration, which the wrapper doesn't keep. The HMI then has no addon plates |
-| `GET /radio` | `[]` | No radios on the wrapper; the radio plate shows none and posts nothing |
 | `GET /playback` | `[]` | No radio recordings |
 | `GET /updates/available` | `[]` | A SIM build never offers flight packages (CLAUDE.md rule 1); `/updates/install` is not served |
 
@@ -395,6 +398,108 @@ padded with spaces to `pad_bytes` (default 1024). The fix belongs in roastbeef
 package keeps them current is **not verified**: the WT G1000 NXi, G3X, GNS 430/530 and
 MSFS 2024's own may not. Check each one on the test machine with a flight plan and a
 direct-to.
+
+## Radio plate, checklist and tail number (D26)
+
+The HMI's radio plate, checklist plate and aircraft plate work on the wrapper's data.
+
+### Radio plate on the sim's COM1 and COM2
+
+`GET /radio` and `WS /radioStatus` carry the daemon's radio list (roastbeef `radio.go`,
+`RadioStatus`). It holds COM1 (index 0) and COM2 (index 1), from the sim's read-back:
+
+| Field | Value |
+|---|---|
+| `FrequencyActive`, `FrequencyStandby` | MHz with three decimals, `"118.100"`. While the radios are stale (2 s, as the position) or the sim gives no frequency: `"---.---"`, never the last value |
+| `Enabled` | the radio the audio panel transmits on (`COM TRANSMIT:n`); false while stale |
+| `Dual` | always false: the sim has no dual watch |
+| `Name`, `Driver` | `COM1`/`COM2`, `SIM` |
+
+Each change on the plate posts the radio whole to `POST /radio/{index}`: the arrows, the
+keypad, SWITCH FREQ. and a frequency picked in SEARCH. The wrapper turns the post into
+control commands ([below](#radio-and-control-api)):
+
+- **What is written.** Only a frequency that differs from the read-back by more than
+  1 kHz. A swap is therefore two sets.
+- **The rules of `POST /api/control`.**
+  - this PC only, unless `control.allow_remote` is set; a tablet on the LAN needs it to
+    tune;
+  - the `radio` group;
+  - `application/json` only, and no foreign origin;
+  - 2 writes per second, each confirmed by read-back.
+- **The answer** is the list once the read-back has settled: at most 3 s, about 0.2 s on
+  the synthetic source. So the plate shows what the sim took. A write the sim ignores comes
+  back as the sim's value.
+- **Not written:** `Enabled`, `Dual` and the labels. The plate sends `Enabled: true` for
+  whichever radio it edits, but the transmit selection stays with the sim's audio panel.
+  The next list shows the sim's values again.
+- **Refused:**
+  - a malformed frequency, or one outside 118.000–136.990 MHz (400);
+  - a radio other than 0 or 1 (404);
+  - the refusals of `/api/control` (403, 415, 503).
+
+`/radioStatus` sends the list on connect, when it changes, and after every post, refused or
+not. So a frequency changed in the sim's cockpit shows on the open plate, and a refused
+edit doesn't stay on it.
+
+NAV1/2 are not on the plate, because it lifts any frequency below 118 MHz to 118. They stay
+on `/api/radio` and `/api/control`.
+
+**An HMI bug, not fixed here** (D26): the plate's arrows pad the kHz part on the right.
+▲ MHz from 122.025 sets 123.250, ▲ kHz from 118.000 sets 118.500, and ▼ kHz from 118.000
+gives `118.-50`, which is refused. The keypad and SEARCH are correct.
+
+### Checklist
+
+- **The file.** `checklist` in the configuration, or `--checklist PATH`, names a checklist
+  in the format of RB-01's `/boot/firmware/checklist/default.json`: a list of groups, each
+  with `name`, `text` and an `items` list. Each item has a `name`, a `text` and a `value`
+  (`todo`, `pass`, `skip`, `fail` or `test`). [checklist.example.json](checklist.example.json)
+  is a generic example, and it also ships beside the executable.
+- **The ticks.** `GET /checklist/default/status` returns the list. The plate posts the
+  whole list back after each tick, and `GET` then returns the posted list. So the ticks
+  survive a reload of the HMI, but not a restart, as on RB-01. The file is never written,
+  and nothing is uploaded.
+- **Reset.** `DELETE /checklist/default/status` restores the file's list, for example
+  between students:
+
+  ```sh
+  curl -X DELETE http://localhost:8090/checklist/default/status
+  ```
+- **Without a file** the list is empty and the plate shows nothing, as on RB-01.
+- **Refused, storing nothing:**
+  - a post that isn't a list of groups with `items` lists (400);
+  - a post over 1 MiB (413);
+  - a post from a page of another origin (403).
+
+  A bad file exits 2 at startup.
+
+### Tail number
+
+- **The aircraft plate's name.** The plate shows the `name` of `/settings/aircraft.json`.
+  The wrapper serves `wwwroot/settings/aircraft.json` there, with `name` set to the sim
+  aircraft's tail number: MSFS `ATC ID`, as set in the aircraft options. The synthetic
+  source's is `X-SYNT`.
+- **Without a tail number** the profile keeps its own name (`X-ABCD` in the copy). Without
+  `wwwroot/settings/aircraft.json` the answer is 404, as before.
+- **When it updates.** The HMI reads the profile once, when it loads, so reload the HMI
+  after changing aircraft.
+- **Elsewhere:** `sim.tail` in `/api/status` and `/api/simstate`.
+
+### Verified on the Linux dev box (2026-10-30)
+
+- **In headless Chrome,** with the HMI from roastbeef `web/RB-01` against the synthetic
+  source:
+  - the radio plate shows COM1/COM2, with COM1 active;
+  - SWITCH FREQ. swaps the frequencies in the sim;
+  - a frequency set through `/api/control` shows on the open plate without a reload;
+  - DUAL ON comes back to OFF;
+  - the aircraft plate shows `X-SYNT` and RADIO COM1;
+  - the checklist plate shows the example, and a tick is stored with its time and survives
+    re-opening the plate;
+  - there are no console errors.
+- **The smoke test's new checks** (section 2c) ran in Python against the same build. They
+  did not run under PowerShell, which this box doesn't have.
 
 ## Radio and control API
 
@@ -539,6 +644,10 @@ items L1 and L2:
     DWORDs, and the trim sign;
   - `HEADING_BUG_SET` and `AP_ALT_VAR_SET_ENGLISH` with the index parameter left at its
     default. `TransmitClientEvent_EX1` is not used yet;
+  - `COM TRANSMIT:1/2` (the radio plate's `Enabled`) and the user aircraft's `ATC ID`
+    (the HMI's tail number), D26;
+  - whether an 8.33 kHz channel reads back as its name (118.010) or as its frequency
+    (118.0083 MHz). As the frequency, a radio plate set of 118.010 ends in `mismatch`;
   - the aircraft acceptance matrix of L7: which aircraft honour which events. Run it from
     the status page or `POST /api/control`, and record the `mismatch` and `unsupported`
     results.

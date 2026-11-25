@@ -52,7 +52,7 @@ public enum U
     EngRpm, EngMap, EngOilTemp, EngOilPress, EngFuelPress, EngCht, EngEgt, EngFuelFlow,
     FuelLeft, FuelRight, BusVolts,
     Com1Active, Com1Standby, Com2Active, Com2Standby, Nav1Active, Nav1Standby, Nav2Active, Nav2Standby,
-    Nav1Radial, Nav1HasNav, XpdrCode, XpdrState, XpdrIdent,
+    Nav1Radial, Nav1HasNav, XpdrCode, XpdrState, XpdrIdent, Com1Transmit, Com2Transmit,
     FlapsPct, ElevTrimPct, GearHandle, ParkingBrake,
     ZuluTime, ZuluDay, ZuluMonth, ZuluYear, SimulationTime,
     GpsWpActive, GpsWpNextLat, GpsWpNextLon, GpsWpNextAlt, GpsWpPrevValid, GpsWpPrevLat, GpsWpPrevLon,
@@ -65,6 +65,9 @@ public enum T
     Lat, Lon, AltMsl, GroundSpeed, HdgTrue, VerticalSpeed, OnGround, VelWorldX, VelWorldZ,
     AtcId, AtcAirline, AtcFlightNumber,
 }
+
+/// <summary>Indexes into <see cref="MsfsDatums.Aircraft"/>.</summary>
+public enum A { Title, AtcId }
 
 public static class MsfsDatums
 {
@@ -135,6 +138,9 @@ public static class MsfsDatums
         new("TRANSPONDER CODE:1", "Bco16"),
         new("TRANSPONDER STATE:1", "enum"),
         new("TRANSPONDER IDENT:1", "bool"),
+        // The audio panel's transmit selection, for the RB-01 radio plate (D26, verify, L1).
+        new("COM TRANSMIT:1", "bool"),
+        new("COM TRANSMIT:2", "bool"),
         // Cockpit actuators.
         new("FLAPS HANDLE PERCENT", "percent"),
         new("ELEVATOR TRIM PCT", "percent"),
@@ -177,7 +183,15 @@ public static class MsfsDatums
         new("ATC FLIGHT NUMBER", null, DatumType.String8),
     ];
 
-    public static readonly Datum[] Title = [new("TITLE", null, DatumType.String256)];
+    /// <summary>
+    /// Requested when they change: the title, and the tail number the RB-01 HMI shows (D26). ATC ID
+    /// is the one set in the sim's aircraft options (verify, L1).
+    /// </summary>
+    public static readonly Datum[] Aircraft =
+    [
+        new("TITLE", null, DatumType.String256),
+        new("ATC ID", null, DatumType.String32),
+    ];
 }
 
 /// <summary>Per-aircraft values the SimVars do not give. Defaults are placeholders (verify per aircraft).</summary>
@@ -314,6 +328,8 @@ public static class MsfsMap
             XpdrCode = Squawk.FromBco16(R(U.XpdrCode)),
             XpdrState = double.IsFinite(R(U.XpdrState)) ? (int)R(U.XpdrState) : null,
             XpdrIdent = Bool(R(U.XpdrIdent)),
+            Com1Transmit = Bool(R(U.Com1Transmit)),
+            Com2Transmit = Bool(R(U.Com2Transmit)),
         };
         radio.Valid = radio.Com1ActiveHz.HasValue;
 
@@ -394,6 +410,10 @@ public static class MsfsMap
             return null;
         }
     }
+
+    /// <summary>The title and tail number from an aircraft block (<see cref="A"/>); a rejected one is empty.</summary>
+    public static (string Title, string Tail) Aircraft(string?[] str) =>
+        ((str[(int)A.Title] ?? "").Trim(), (str[(int)A.AtcId] ?? "").Trim());
 
     public static TrafficTarget? MapTraffic(double[] num, string?[] str, uint objectId, double now)
     {

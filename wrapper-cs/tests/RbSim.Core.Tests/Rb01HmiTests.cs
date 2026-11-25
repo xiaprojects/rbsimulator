@@ -241,4 +241,17 @@ public class Rb01HmiTests
         Assert.Equal("0001-01-01T00:00:00.000Z", Rb01Hmi.ZeroTime);
         Assert.Equal("0001-01-01T01:00:01.500Z", Rb01Hmi.Clock(3601.5));
     }
+
+    // Covers: RB-SIM-HMI-090
+    [Fact]
+    public void TheAircraftProfileIsNamedAfterTheSimTailNumber()
+    {
+        static JsonObject Profile() => JsonNode.Parse("""{"name": "X-ABCD", "pilot": "PILOT", "units": {"speed": "KMH"}}""")!.AsObject();
+        var named = Rb01Hmi.Aircraft(Profile(), "X-SYNT");
+        Assert.Equal("X-SYNT", (string?)named["name"]);
+        Assert.Equal("PILOT", (string?)named["pilot"]);
+        Assert.Equal("KMH", (string?)named["units"]!["speed"]);
+        // without a tail number from the sim the profile keeps its own name
+        Assert.Equal("X-ABCD", (string?)Rb01Hmi.Aircraft(Profile(), "")["name"]);
+    }
 }

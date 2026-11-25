@@ -34,8 +34,8 @@ namespace RbSim.Msfs;
 
 public sealed class MsfsSource(StateStore store, WrapperOptions options, ActuatorManager actuators, ILogger log) : ISource
 {
-    enum Def : uint { User = 1, Title = 2, Traffic = 3 }
-    enum Req : uint { User = 1, Title = 2, Traffic = 3 }
+    enum Def : uint { User = 1, Aircraft = 2, Traffic = 3 }
+    enum Req : uint { User = 1, Aircraft = 2, Traffic = 3 }
     enum Ev : uint { Sim = 1, PauseEx1 = 2, FlightLoaded = 3, AircraftLoaded = 4, PositionChanged = 5, Crashed = 6 }
 
     static readonly (Ev id, string name)[] SystemEvents =
@@ -56,7 +56,7 @@ public sealed class MsfsSource(StateStore store, WrapperOptions options, Actuato
     readonly Dictionary<Def, DataLayout> _layouts = new()
     {
         [Def.User] = new DataLayout(MsfsDatums.User),
-        [Def.Title] = new DataLayout(MsfsDatums.Title),
+        [Def.Aircraft] = new DataLayout(MsfsDatums.Aircraft),
         [Def.Traffic] = new DataLayout(MsfsDatums.Traffic),
     };
     readonly HashSet<Def> _dirty = [];
@@ -142,7 +142,7 @@ public sealed class MsfsSource(StateStore store, WrapperOptions options, Actuato
         foreach (var (id, name) in SystemEvents) Check(SimConnect_SubscribeToSystemEvent(_h, (uint)id, name), "SubscribeToSystemEvent " + name);
         MapActuatorEvents();
         RequestUser();
-        RequestTitle();
+        RequestAircraft();
         return true;
     }
 
@@ -218,7 +218,7 @@ public sealed class MsfsSource(StateStore store, WrapperOptions options, Actuato
                 break;
             case RecvSimobjectData:
                 if (U32(b, 12) == (uint)Req.User) OnUserFrame(U32(b, 16), U32(b, 36), b.AsSpan(RecvDataOffset));
-                else if (U32(b, 12) == (uint)Req.Title) OnTitle(b.AsSpan(RecvDataOffset));
+                else if (U32(b, 12) == (uint)Req.Aircraft) OnAircraft(U32(b, 36), b.AsSpan(RecvDataOffset));
                 break;
             case RecvSimobjectDataBytype:
                 if (U32(b, 12) == (uint)Req.Traffic) OnTraffic(U32(b, 16), U32(b, 28), U32(b, 32), b.AsSpan(RecvDataOffset));
@@ -278,7 +278,7 @@ public sealed class MsfsSource(StateStore store, WrapperOptions options, Actuato
                 break;
             case Ev.AircraftLoaded:
                 _teleport.OnEvent();
-                RequestTitle();
+                RequestAircraft();
                 break;
             case Ev.Crashed:
                 log.LogInformation("Sim reports a crash");
@@ -317,12 +317,14 @@ public sealed class MsfsSource(StateStore store, WrapperOptions options, Actuato
         Status.Published.Tick(now);
     }
 
-    void OnTitle(ReadOnlySpan<byte> block)
+    void OnAircraft(uint defineCount, ReadOnlySpan<byte> block)
     {
-        _layouts[Def.Title].Decode(block, out _, out var str);
-        string title = (str[0] ?? "").Trim();
-        store.Update(s => s.Sim.Aircraft = title);
-        log.LogInformation("Aircraft: {Title}", title);
+        var layout = _layouts[Def.Aircraft];
+        if (!BlockMatches(layout, defineCount, block, "aircraft")) return;
+        layout.Decode(block, out _, out var str);
+        var (title, tail) = MsfsMap.Aircraft(str);
+        store.Update(s => { s.Sim.Aircraft = title; s.Sim.Tail = tail; });
+        log.LogInformation("Aircraft: {Title}, tail number {Tail}", title, tail.Length > 0 ? tail : "unknown");
     }
 
     void OnTraffic(uint objectId, uint entry, uint outOf, ReadOnlySpan<byte> block)
@@ -389,7 +391,7 @@ public sealed class MsfsSource(StateStore store, WrapperOptions options, Actuato
             SimConnect_RequestDataOnSimObject(_h, (uint)Req.User, (uint)Def.User, ObjectIdUser, PeriodNever, 0, 0, 0, 0);
         Define(def);
         if (def == Def.User) RequestUser();
-        if (def == Def.Title) RequestTitle();
+        if (def == Def.Aircraft) RequestAircraft();
         Status.RejectedDatums = [.. _layouts.Values.SelectMany(l => l.Rejected.Select(i => l.All[i].Name))];
     }
 
@@ -421,8 +423,8 @@ public sealed class MsfsSource(StateStore store, WrapperOptions options, Actuato
     void RequestUser() =>
         Check(SimConnect_RequestDataOnSimObject(_h, (uint)Req.User, (uint)Def.User, ObjectIdUser, PeriodSimFrame, 0, 0, (uint)options.FrameSkip, 0), "RequestDataOnSimObject user");
 
-    void RequestTitle() =>
-        Check(SimConnect_RequestDataOnSimObject(_h, (uint)Req.Title, (uint)Def.Title, ObjectIdUser, PeriodSecond, FlagChanged, 0, 0, 0), "RequestDataOnSimObject title");
+    void RequestAircraft() =>
+        Check(SimConnect_RequestDataOnSimObject(_h, (uint)Req.Aircraft, (uint)Def.Aircraft, ObjectIdUser, PeriodSecond, FlagChanged, 0, 0, 0), "RequestDataOnSimObject aircraft");
 
     static uint DataType(DatumType t) => t switch
     {

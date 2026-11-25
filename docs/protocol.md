@@ -173,9 +173,11 @@ without checking it first.
 | `SIM ON GROUND` | Miscellaneous | bool | bool | `sim.on_ground` | |
 | `IS SLEW ACTIVE` | Aircraft Misc | bool | bool | teleport detection | |
 | `TITLE` (+ `LIVERY NAME`) | Aircraft Misc | string ≤ 128 | string | `sim.aircraft` → profile | |
+| `ATC ID` (user aircraft) | Aircraft Misc | string | STRING32 | `sim.tail` (C# wrapper: the RB-01 HMI's aircraft name, D26) | requested with `TITLE`, on change. **L1:** check it is the tail number set in the aircraft options |
 | `AUTOPILOT MASTER`, `…HEADING LOCK`, `…HEADING LOCK DIR`, `…HEADING SLOT INDEX`, `…ALTITUDE LOCK VAR` | Autopilot | bool, degrees, number, feet | same | `ap.*`, the §5 read-back | `HEADING LOCK DIR` and `ALTITUDE LOCK VAR` are settable |
 | `COM ACTIVE FREQUENCY:1`, `COM STANDBY FREQUENCY:1` | Radio Navigation | Frequency BCD16 | hertz (**L1**: confirm it converts) | `radio.*` (R2) | |
 | `NAV ACTIVE FREQUENCY:1`, `NAV RADIAL:1`, `NAV HAS NAV` | Radio Navigation | MHz, degrees, bool | same | `radio.nav1_*` (Later: RB-01 VOR addon) | |
+| `COM TRANSMIT:1`, `COM TRANSMIT:2` | Radio Navigation | bool | bool | `radio.com1_transmit`, `com2_transmit` (C# wrapper: the RB-01 radio plate's `Enabled`, D26) | **L1:** check it follows the audio panel |
 | `GPS IS ACTIVE WAY POINT`, `GPS WP NEXT LAT`, `…LON`, `…ALT`, `GPS WP NEXT ID` | GPS | bool, degrees, meters, string | same; ID as STRING32 | `nav.to_*`; valid only while active and not at 0,0 (RB-SIM-MSF-150) | **L1:** check that each avionics package (WT G1000 NXi, G3X, GNS 430/530, MSFS 2024) keeps them current, for a plan and a direct-to (verify) |
 | `GPS WP PREV VALID`, `GPS WP PREV LAT`, `…LON`, `GPS WP PREV ID` | GPS | bool, degrees, string | same | `nav.from_*`, kept only while `PREV VALID` | as above |
 
@@ -832,6 +834,8 @@ $GPXTE,A,A,0.54,R,N*71
 ### R2, later
 
 - COM1 active/standby sync with the RB-01 radio plate (needs a radio emulation design).
+  The C# wrapper does it for the HMI it serves, COM1 and COM2 (D26, HMI-070); a real
+  RB-01 hub still needs its own design.
 - Optional QNH sync (off by default).
 - IOS reposition and scenario load go IOS → wrapper → simulator directly, not through RB.
 
@@ -953,8 +957,11 @@ permanent: withdraw, never renumber. Tests declare `# Covers: <id>`. Verificatio
 | **HMI-020** | hub-lite socket rates stay within §4.3 | T | M1 |
 | **HMI-030** | The HMI shows the SIM annunciation on every plate (hub-lite and rbsim RB-01) | D | M1, M3 |
 | **HMI-040** | The C# wrapper serves the RB-01 HMI sockets (`/situation`, `/traffic`, `/radar`, `/ems`, `/status`) in the daemon's frame shapes, built from its state message, at the §4.3 rates. A stale or invalid group goes out as the daemon's no-data state plus its invalid markers, never as the last value (D22) | T | — |
-| **HMI-050** | The C# wrapper answers the HMI's REST calls `/addons`, `/radio`, `/playback` and `/updates/available` with the daemon's empty list, and keeps the addons bridge `/bridge/float` (GET, POST, `/bridge/float/ws` on change) in memory. Nothing posted to the bridge reaches the flight data; a bad post or a foreign web origin is refused and stores nothing (D23) | T | — |
+| **HMI-050** | The C# wrapper answers the HMI's REST calls `/addons`, `/playback` and `/updates/available` with the daemon's empty list (`/radio`: HMI-070 since D26), and keeps the addons bridge `/bridge/float` (GET, POST, `/bridge/float/ws` on change) in memory. Nothing posted to the bridge reaches the flight data; a bad post or a foreign web origin is refused and stores nothing (D23) | T | — |
 | **HMI-060** | The C# wrapper's `/autopilot` socket sends `AutopilotStatus` from the sim GPS's active leg at 1 Hz, and `GET /autopilot` returns the daemon's waypoint list (origin past, destination target). Without guidance, the daemon's idle frame and an empty list. `POST`, `PUT` and `DELETE` change nothing (D25) | T | — |
+| **HMI-070** | The C# wrapper's `GET /radio` and `/radioStatus` carry the daemon's `RadioStatus` list for the sim's COM1 and COM2, from the read-back; a stale group or missing frequency shows `---.---`, never the last value. The radio plate's `POST /radio/{index}` sets only the frequencies that differ from the read-back, as control commands under the D20 rules, and answers the list once the read-back settles; `Enabled` and `Dual` are never written (D26) | T, D | — |
+| **HMI-080** | The C# wrapper's `/checklist/default/status` serves the checklist from the configured file, keeps the plate's posts in memory only, refuses a post that is not a list of groups with `items` and stores nothing, and `DELETE` restores the file's list (D26) | T | — |
+| **HMI-090** | The C# wrapper's `GET /settings/aircraft.json` is the HMI's aircraft profile with the sim aircraft's tail number (MSFS `ATC ID`) as `name`, or the profile's own name without one (D26) | T, D | — |
 | **ESP-010** | Device lines follow the §4.4 line rules | T | M0, M4 |
 | **ESP-020** | `$RBATT` per §4.4 | T | M0, M4 |
 | **ESP-030** | `$RBADC` per §4.4 | T | M0, M4 |

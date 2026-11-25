@@ -50,6 +50,7 @@ public sealed class SyntheticSource(StateStore store, ActuatorManager actuators)
             s.Sim.SimName = "synthetic";
             s.Sim.SimVersion = "1";
             s.Sim.Aircraft = "Synthetic single piston";
+            s.Sim.Tail = "X-SYNT"; // a placeholder, never a real registration (CLAUDE.md rule 6)
             s.Sim.Connected = true;
         });
         _thread = new Thread(Run) { IsBackground = true, Name = "synthetic" };
@@ -255,6 +256,8 @@ public sealed class SyntheticSource(StateStore store, ActuatorManager actuators)
             XpdrCode = _c.SquawkCode,
             XpdrState = _c.XpdrState,
             XpdrIdent = now < _c.IdentUntil,
+            Com1Transmit = true,
+            Com2Transmit = false,
         };
         s.Controls = new ControlsGroup
         {

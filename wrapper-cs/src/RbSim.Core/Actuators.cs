@@ -245,6 +245,11 @@ public static class RadioView
     }
 
     static JsonNode? Hz(double? hz) => hz is double v ? Math.Round(v) : null;
-    // Frequency, not the 8.33 kHz channel name: 118.0083 MHz shows as "118.008" (channel 118.010).
-    static JsonNode? Mhz(double? hz) => hz is double v ? (v / 1e6).ToString("0.000", CultureInfo.InvariantCulture) : null;
+    static JsonNode? Mhz(double? hz) => hz is double v ? MhzText(v) : null;
+
+    /// <summary>
+    /// MHz with three decimals. The frequency, not the 8.33 kHz channel name: 118.0083 MHz shows
+    /// as "118.008" (channel 118.010).
+    /// </summary>
+    public static string MhzText(double hz) => (hz / 1e6).ToString("0.000", CultureInfo.InvariantCulture);
 }

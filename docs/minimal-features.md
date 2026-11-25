@@ -46,7 +46,7 @@ labelled synthetic in the profile, and the IOS can override a cylinder (RB-SIM-M
 | RB-01 autopilot **flying the sim** | `$GPAPB`/`$GPRMB`/`$PGRMH` from TCP `:2000` → sim AP heading bug, altitude preselect | reverse channel | **MVP** for A; B as option |
 | SIM annunciation on every plate | `/sim/status` | sim addon (rbsim build only) | **MVP** (safety) |
 | GDL90 / FLARM out to an EFB tablet (ForeFlight, SkyDemon) | — | free: RB-01 outputs are unchanged | **MVP** (free) |
-| Radio remote plate ↔ sim COM1 active/standby | COM frequencies | reverse channel plus radio emulation (investigate) | R2 |
+| Radio remote plate ↔ sim COM1 active/standby | COM frequencies | reverse channel plus radio emulation (investigate) | R2 (the C# wrapper's own HMI: done for COM1/COM2, D26) |
 | QNH sync, RB-01 ↔ sim Kohlsman | baro setting | optional, off by default (each instrument has its own knob, as in the aircraft) | R2 |
 | VOR addon fed from sim NAV1 radial | NAV1 freq, radial, signal | `/bridge/float` keys `vorfreq`, `vorradial`, `vorstatus`… (rb-vor contract) | Later |
 | RB-08 voice (rbvoice) | — | free: it talks to the RB-01 API | Later (free, test only) |

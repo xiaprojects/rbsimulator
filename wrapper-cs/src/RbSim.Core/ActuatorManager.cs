@@ -252,6 +252,13 @@ public sealed class ActuatorManager(IEnumerable<ActuatorGroup> allowed)
         return writes;
     }
 
+    /// <summary>Whether none of these actuators has a command still waiting for its write or its read-back.</summary>
+    public bool Settled(IEnumerable<string> names)
+    {
+        lock (_lock)
+            return names.All(n => !_slots.TryGetValue(n, out var slot) || slot.Status is not (CommandStatus.Pending or CommandStatus.Sent));
+    }
+
     static void Settle(Slot slot, CommandStatus status, string? detail)
     {
         slot.Status = status;

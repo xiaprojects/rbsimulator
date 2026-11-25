@@ -58,6 +58,9 @@ $ErrorActionPreference = 'Continue'
 $badExit = $LASTEXITCODE
 & $Exe --source synthetic --rb01-web-dir (Join-Path $work 'no-such-folder') 2>&1 | Out-Null
 $noDirExit = $LASTEXITCODE
+Set-Content -Path (Join-Path $work 'bad-checklist.json') -Value '{ "items": [] }'
+& $Exe --source synthetic --checklist (Join-Path $work 'bad-checklist.json') 2>&1 | Out-Null
+$badChecklistExit = $LASTEXITCODE
 if ($IsLinux) {
     & $Exe --source msfs 2>&1 | Out-Null
     $msfsExit = $LASTEXITCODE
@@ -65,6 +68,7 @@ if ($IsLinux) {
 $ErrorActionPreference = 'Stop'
 Check ($badExit -eq 2) 'an unknown configuration key exits 2'
 Check ($noDirExit -eq 2) 'a missing RB-01 HMI folder exits 2'
+Check ($badChecklistExit -eq 2) 'a checklist that is not a list of groups exits 2'
 if ($IsLinux) { Check ($msfsExit -eq 2) 'the msfs source is refused on Linux (exit 2)' }
 
 # 2. run the synthetic source with a file serial output and an RB-01 HMI folder from a configuration file
@@ -74,8 +78,11 @@ $web = Join-Path $work 'RB-01'
 New-Item -ItemType Directory -Path (Join-Path $web 'js') | Out-Null
 Set-Content -Path (Join-Path $web 'index.html') -Value '<html><title>RB-01 smoke</title></html>'
 Set-Content -Path (Join-Path $web 'js/main.js') -Value 'var smoke = 1;'
+$checklistFile = Join-Path $work 'checklist.json'
+$checklistItem = '[{"name": "SMOKE", "text": "TEST", "items": [{"id": 0, "name": "ONE", "text": "CHECK", "value": "VALUE"}]}]'
+Set-Content -Path $checklistFile -Value $checklistItem.Replace('VALUE', 'todo')
 @{
-    source = 'synthetic'; listen = '127.0.0.1'; port = $Port; rb01_web_dir = $web
+    source = 'synthetic'; listen = '127.0.0.1'; port = $Port; rb01_web_dir = $web; checklist = $checklistFile
     serial = @(@{ name = 'capture'; port = "file:$capture"; profile = 'rb07' })
 } | ConvertTo-Json -Depth 4 | Set-Content -Path $config
 
@@ -156,7 +163,7 @@ try {
         $quiet.Dispose()
 
         # 2a. the HMI's REST calls: empty lists, and the addons bridge
-        foreach ($p in '/addons', '/radio', '/playback', '/updates/available') {
+        foreach ($p in '/addons', '/playback', '/updates/available') {
             $r = Invoke-WebRequest "$base$p" -UseBasicParsing
             Check ($r.StatusCode -eq 200 -and $r.Content.Trim() -eq '[]') "GET $p answers the daemon's empty list"
         }
@@ -191,6 +198,48 @@ try {
         Check ((Get-Code { Invoke-WebRequest "$base/api/control" -Method Post -ContentType 'application/json' -Headers @{ Origin = 'http://example.invalid' } -Body '{"gear_down": true}' -UseBasicParsing }) -eq 403) 'a command from a foreign web origin is refused with 403'
         Check ((Get-Code { Invoke-WebRequest "$base/bridge/float" -Method Post -Body '{"qnh": "x"}' -UseBasicParsing }) -eq 400) 'a bridge value that is not a number is refused with 400'
         Check ((Get-Code { Invoke-WebRequest "$base/bridge/float" -Method Post -Headers @{ Origin = 'http://example.invalid' } -Body '{"qnh": 1}' -UseBasicParsing }) -eq 403) 'a bridge write from a foreign web origin is refused with 403'
+
+        # 2c. the HMI's radio plate on the sim's COM radios, its checklist and its aircraft profile (D26)
+        $stack = Invoke-RestMethod "$base/api/radio"
+        $radios = Invoke-RestMethod "$base/radio"
+        Check ($radios.Count -eq 2 -and $radios[0].Name -eq 'COM1' -and $radios[0].FrequencyActive -eq $stack.com1.active_mhz -and $radios[0].Enabled -eq $true) 'GET /radio lists the sim''s COM1 and COM2'
+        $radioSock = New-Object System.Net.WebSockets.ClientWebSocket
+        $radioSock.ConnectAsync([Uri]"ws://127.0.0.1:$Port/radioStatus", [Threading.CancellationToken]::None).Wait()
+        $first = $radioSock.ReceiveAsync($seg, [Threading.CancellationToken]::None)
+        $onConnect = if ($first.Wait(3000)) { [Text.Encoding]::UTF8.GetString($buf, 0, $first.Result.Count) | ConvertFrom-Json }
+        Check ($onConnect.Count -eq 2) '/radioStatus sends the radio list on connect'
+        # what the plate's radioApply() posts: the radio whole; only the changed standby is written
+        $edit = @{ Enabled = $true; FrequencyActive = $radios[1].FrequencyActive; FrequencyStandby = '128.250'; LabelActive = ''; LabelStandby = ''; Dual = $true } | ConvertTo-Json
+        $after = Invoke-RestMethod "$base/radio/1" -Method Post -ContentType 'application/json' -Body $edit
+        Check ($after[1].FrequencyStandby -eq '128.250' -and $after[1].Dual -eq $false) 'POST /radio/1 answers once the sim took the frequency'
+        $pushed = $null
+        for ($i = 0; $i -lt 10 -and $null -eq $pushed; $i++) {
+            $pending = $radioSock.ReceiveAsync($seg, [Threading.CancellationToken]::None)
+            if (-not $pending.Wait(3000)) { break }
+            $l = [Text.Encoding]::UTF8.GetString($buf, 0, $pending.Result.Count) | ConvertFrom-Json
+            if ($l[1].FrequencyStandby -eq '128.250') { $pushed = $l }
+        }
+        Check ($null -ne $pushed) '/radioStatus sends the new list after a plate post'
+        $radioSock.Dispose()
+        Check ((Get-Code { Invoke-WebRequest "$base/radio/0" -Method Post -ContentType 'application/json' -Body '{"FrequencyStandby": "118.-50"}' -UseBasicParsing }) -eq 400) 'a malformed plate frequency is refused with 400'
+        Check ((Get-Code { Invoke-WebRequest "$base/radio/0" -Method Post -ContentType 'application/json' -Body '{"FrequencyStandby": "140.000"}' -UseBasicParsing }) -eq 400) 'a plate frequency out of the COM band is refused with 400'
+        Check ((Get-Code { Invoke-WebRequest "$base/radio/2" -Method Post -ContentType 'application/json' -Body '{}' -UseBasicParsing }) -eq 404) 'a radio the sim does not have is 404'
+        Check ((Get-Code { Invoke-WebRequest "$base/radio/0" -Method Post -ContentType 'application/json' -Headers @{ Origin = 'http://example.invalid' } -Body '{}' -UseBasicParsing }) -eq 403) 'a radio post from a foreign web origin is refused with 403'
+
+        $checklistUrl = "$base/checklist/default/status"
+        Check ((Invoke-RestMethod $checklistUrl)[0].items[0].value -eq 'todo') 'GET /checklist/default/status returns the configured checklist'
+        $null = Invoke-WebRequest $checklistUrl -Method Post -ContentType 'application/json' -Body $checklistItem.Replace('VALUE', 'pass') -UseBasicParsing
+        Check ((Invoke-RestMethod $checklistUrl)[0].items[0].value -eq 'pass') 'POST /checklist/default/status stores the plate''s list'
+        Check ((Get-Code { Invoke-WebRequest $checklistUrl -Method Post -ContentType 'application/json' -Body '{}' -UseBasicParsing }) -eq 400) 'a checklist post that is not a list of groups is refused with 400'
+        $null = Invoke-WebRequest $checklistUrl -Method Delete -UseBasicParsing
+        Check ((Invoke-RestMethod $checklistUrl)[0].items[0].value -eq 'todo') 'DELETE /checklist/default/status restores the file''s list'
+
+        Check ($status.sim.tail -eq 'X-SYNT') '/api/status reports the sim aircraft''s tail number'
+        if (Test-Path (Join-Path (Split-Path $Exe) 'wwwroot/settings/aircraft.json')) {
+            Check ((Invoke-RestMethod "$base/settings/aircraft.json").name -eq 'X-SYNT') 'the HMI''s aircraft profile is named after the tail number'
+        } else {
+            Check ((Get-Code { Invoke-WebRequest "$base/settings/aircraft.json" -UseBasicParsing }) -eq 404) 'without the HMI''s shared files there is no aircraft profile (404)'
+        }
     }
 }
 finally {

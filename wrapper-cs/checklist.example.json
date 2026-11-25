@@ -1,0 +1,30 @@
+[
+  {
+    "isselected": "", "value": "todo", "id": 0, "date": "", "dateParsed": "__:__",
+    "name": "BEFORE START", "text": "EXAMPLE - NOT FOR FLIGHT",
+    "items": [
+      { "isselected": "", "value": "todo", "id": 0, "date": "", "dateParsed": "__:__", "name": "PREFLIGHT INSPECTION", "text": "COMPLETE" },
+      { "isselected": "", "value": "todo", "id": 1, "date": "", "dateParsed": "__:__", "name": "SEATBELTS", "text": "FASTENED" },
+      { "isselected": "", "value": "todo", "id": 2, "date": "", "dateParsed": "__:__", "name": "FUEL QUANTITY", "text": "CHECKED" },
+      { "isselected": "", "value": "todo", "id": 3, "date": "", "dateParsed": "__:__", "name": "AVIONICS", "text": "OFF" }
+    ]
+  },
+  {
+    "isselected": "", "value": "todo", "id": 1, "date": "", "dateParsed": "__:__",
+    "name": "BEFORE TAKEOFF", "text": "EXAMPLE - NOT FOR FLIGHT",
+    "items": [
+      { "isselected": "", "value": "todo", "id": 0, "date": "", "dateParsed": "__:__", "name": "FLIGHT CONTROLS", "text": "FREE AND CORRECT" },
+      { "isselected": "", "value": "todo", "id": 1, "date": "", "dateParsed": "__:__", "name": "ALTIMETER", "text": "SET" },
+      { "isselected": "", "value": "todo", "id": 2, "date": "", "dateParsed": "__:__", "name": "COM RADIOS", "text": "SET" },
+      { "isselected": "", "value": "todo", "id": 3, "date": "", "dateParsed": "__:__", "name": "TRANSPONDER", "text": "ALT" }
+    ]
+  },
+  {
+    "isselected": "", "value": "todo", "id": 2, "date": "", "dateParsed": "__:__",
+    "name": "AFTER LANDING", "text": "EXAMPLE - NOT FOR FLIGHT",
+    "items": [
+      { "isselected": "", "value": "todo", "id": 0, "date": "", "dateParsed": "__:__", "name": "FLAPS", "text": "UP" },
+      { "isselected": "", "value": "todo", "id": 1, "date": "", "dateParsed": "__:__", "name": "TRANSPONDER", "text": "STANDBY" }
+    ]
+  }
+]

@@ -140,7 +140,7 @@ jobs:
           $name = "rbsim-msfs-${{ steps.version.outputs.version }}-${{ matrix.rid }}"
           $stage = Join-Path $env:RUNNER_TEMP $name
           New-Item -ItemType Directory -Path $stage | Out-Null
-          $files = @('out/${{ matrix.exe }}', 'out/rbsim-msfs.example.json', 'README.md', '../LICENSE')
+          $files = @('out/${{ matrix.exe }}', 'out/rbsim-msfs.example.json', 'out/checklist.example.json', 'README.md', '../LICENSE')
           if ($IsLinux) { $files += 'out/libSystem.IO.Ports.Native.so' }
           # the RB-01 HMI's shared files (wwwroot beside the executable), when the build has them
           if (Test-Path out/wwwroot) { $files += 'out/wwwroot' }

@@ -71,6 +71,7 @@ public class RadioMapTests
         raw[(int)U.Com1Active] = 118_100_000; raw[(int)U.Com1Standby] = 121_500_000;
         raw[(int)U.Nav1Active] = 110_500_000; raw[(int)U.Nav1Radial] = 365; raw[(int)U.Nav1HasNav] = 1;
         raw[(int)U.XpdrCode] = 0x7000; raw[(int)U.XpdrState] = 4; raw[(int)U.XpdrIdent] = 0;
+        raw[(int)U.Com1Transmit] = 0; raw[(int)U.Com2Transmit] = 1;
         raw[(int)U.FlapsPct] = 25; raw[(int)U.ElevTrimPct] = -3; raw[(int)U.GearHandle] = 1; raw[(int)U.ParkingBrake] = 0;
         raw[(int)U.ApVsVar] = -500; raw[(int)U.ApAltLock] = 1;
         var s = Frames.Mapped(raw: raw);
@@ -80,6 +81,8 @@ public class RadioMapTests
         Assert.Equal(5, s.Radio.Nav1RadialDeg!.Value, 9);
         Assert.Equal(7000, s.Radio.XpdrCode);
         Assert.Equal(4, s.Radio.XpdrState);
+        Assert.False(s.Radio.Com1Transmit);
+        Assert.True(s.Radio.Com2Transmit);
         Assert.Equal(25, s.Controls.FlapsPct);
         Assert.True(s.Controls.GearDown);
         Assert.Equal(-500, Units.MpsToFpm(s.Ap.VsSelMps!.Value), 6);

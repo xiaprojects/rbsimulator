@@ -260,6 +260,21 @@ public class DataLayoutTests
         Assert.Equal(3.5, num[3]);
     }
 
+    // Covers: RB-SIM-HMI-090, RB-SIM-MSF-130
+    [Fact]
+    public void TheAircraftBlockGivesTheTitleAndTheTailNumber()
+    {
+        Assert.Equal(Enum.GetValues<A>().Length, MsfsDatums.Aircraft.Length);
+        var layout = new DataLayout(MsfsDatums.Aircraft);
+        layout.Decode(Block(("Cessna Skyhawk Asobo", 256), (" X-ABCD ", 32)), out _, out var str);
+        Assert.Equal(("Cessna Skyhawk Asobo", "X-ABCD"), MsfsMap.Aircraft(str));
+
+        // an ATC ID the sim rejects leaves the tail number unknown, not shifted
+        Assert.True(layout.Reject((int)A.AtcId));
+        layout.Decode(Block(("Cessna Skyhawk Asobo", 256)), out _, out str);
+        Assert.Equal(("Cessna Skyhawk Asobo", ""), MsfsMap.Aircraft(str));
+    }
+
     [Fact]
     public void ShortBlockLeavesTheRestInvalid()
     {

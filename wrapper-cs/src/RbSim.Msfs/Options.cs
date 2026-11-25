@@ -115,6 +115,8 @@ public sealed class WrapperOptions
     public ControlOptions Control { get; } = new();
     /// <summary>RB-01 HMI folder (roastbeef <c>web/RB-01</c>) served at <c>/RB-01/</c>; null serves nothing.</summary>
     public string? Rb01WebDir { get; set; }
+    /// <summary>The RB-01 checklist file (roastbeef's /boot/firmware/checklist/default.json format); null: no checklist.</summary>
+    public string? Checklist { get; set; }
     public bool ListPorts { get; set; }
 
     public const string Usage = """
@@ -142,6 +144,7 @@ public sealed class WrapperOptions
           --no-control               refuse all writes to the simulator (read-only)
           --control-remote            accept control commands from other computers too (default: this PC only)
           --rb01-web-dir PATH         serve this RB-01 HMI folder (roastbeef web/RB-01) at /RB-01/
+          --checklist PATH            the RB-01 checklist plate's list (as RB-01's checklist/default.json)
           --list-ports                list the serial ports and exit
           --help                      this text
 
@@ -157,10 +160,18 @@ public sealed class WrapperOptions
           WS  /situation /traffic /radar /ems /status
                                 the RB-01 daemon's HMI sockets, in its frame shapes, so the HMI runs on
                                 this data; /autopilot sends the sim GPS's active leg each second;
-                                /keypad /alerts /radioStatus /gdl90 /weather are accepted and stay quiet
+                                /radioStatus sends the radio list when it changes;
+                                /keypad /alerts /gdl90 /weather are accepted and stay quiet
           GET /autopilot        the active leg as the daemon's waypoint list (origin, destination), for
                                 the HSI and the path; POST, PUT and DELETE change nothing
-          GET /addons /radio /playback /updates/available
+          GET /radio, POST /radio/N
+                                the radio plate on the sim's COM1 (0) and COM2 (1); a post is a control
+                                command, answered once the sim's read-back settles
+          GET|POST|DELETE /checklist/default/status
+                                the checklist plate's list, from --checklist, in memory; DELETE resets it
+          GET /settings/aircraft.json
+                                the HMI's aircraft profile, named after the sim aircraft's tail number
+          GET /addons /playback /updates/available
                                 the HMI's REST calls, answered with the daemon's empty list
           GET|POST /bridge/float, WS /bridge/float/ws
                                 the daemon's addons bridge (the HMI's QNH), in memory only
@@ -231,6 +242,7 @@ public sealed class WrapperOptions
                 case "--no-control": o.Control.Enabled = false; break;
                 case "--control-remote": o.Control.AllowRemote = true; break;
                 case "--rb01-web-dir": o.Rb01WebDir = Next(); break;
+                case "--checklist": o.Checklist = Next(); break;
                 case "--list-ports": o.ListPorts = true; break;
                 default: throw new ArgumentException($"unknown option {a}");
             }
@@ -281,6 +293,7 @@ public sealed class WrapperOptions
             if (c.Groups is { } groups) Control.Groups = [.. groups.Select(Actuators.ParseGroup).Distinct()];
         }
         if (f.Rb01WebDir is not null) Rb01WebDir = f.Rb01WebDir;
+        if (f.Checklist is not null) Checklist = f.Checklist;
     }
 
     void Validate()
@@ -295,6 +308,15 @@ public sealed class WrapperOptions
         {
             Rb01WebDir = Path.GetFullPath(Rb01WebDir);
             if (!Directory.Exists(Rb01WebDir)) throw new ArgumentException($"rb01_web_dir: folder not found: {Rb01WebDir}");
+        }
+        if (string.IsNullOrWhiteSpace(Checklist))
+        {
+            Checklist = null;
+        }
+        else
+        {
+            Checklist = Path.GetFullPath(Checklist);
+            if (!File.Exists(Checklist)) throw new ArgumentException($"checklist: file not found: {Checklist}");
         }
         var ports = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         for (int i = 0; i < Serial.Count; i++)
@@ -397,6 +419,7 @@ public sealed class WrapperOptions
         public List<UdpOutputConfig>? Udp { get; set; }
         public ControlSection? Control { get; set; }
         public string? Rb01WebDir { get; set; }
+        public string? Checklist { get; set; }
     }
 
     sealed class ControlSection

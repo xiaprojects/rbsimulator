@@ -6,6 +6,95 @@ link the replacement.
 
 ## Decisions
 
+### D26 — The C# wrapper drives the RB-01 HMI's radio plate, checklist and tail number (accepted, 2026-10-30)
+- **Request** (maintainer): support more HMI components, such as radio management, the
+  checklist and the aircraft tail name.
+- **Radio plate on the sim's COM radios** (`RbSim.Core.Rb01Radio`):
+  - `GET /radio` and the `/radioStatus` socket carry the daemon's `RadioStatus` list
+    (roastbeef `radio.go`) for COM1 (index 0) and COM2 (index 1), from the sim's read-back.
+    `Enabled` is the audio panel's transmit selection (`COM TRANSMIT:1/2`, two new datums).
+    `Dual` is always false.
+  - The plate's `POST /radio/{index}` becomes control commands (D20). Only a frequency that
+    differs from the read-back by more than the actuator's 1 kHz tolerance is set, because
+    the plate posts the radio whole; its swap is therefore two sets. The D20 rules apply:
+    this PC only unless `allow_remote`, group `radio`, JSON only, a foreign origin gets 403,
+    2 Hz per control and confirmation by read-back.
+  - The answer is the list once the read-back has settled (at most 3 s), so the plate's next
+    `GET` shows what the sim took. The daemon also answers only after its radio has the
+    frequency (it waits 250 ms per change). A malformed frequency gets 400, and a radio other
+    than 0 or 1 gets 404.
+  - **Not written:**
+    - `Enabled`: the plate sends `true` for whichever radio it edits, and moving the
+      microphone to it would surprise a pilot at an audio panel;
+    - `Dual`: the sim has no dual watch;
+    - the labels: the plate names frequencies from its own database.
+
+    The next list shows the sim's values again.
+  - `/radioStatus` sends the list on connect, on each change (checked at 2 Hz) and after
+    each post, refused or not, so the plate always returns to what the sim has. The daemon
+    sends it after a post only, because its radios change nowhere else.
+  - **Staleness (SAF-050).** A stale radio group, or a frequency the sim doesn't give,
+    shows `---.---` with `Enabled` false, never the last value and never an empty string
+    (the plate turns an empty one into 118.000). The timeout is the position's 2 s: the
+    radios come in the same user frame.
+  - **COM only.** The plate lifts any frequency below 118 MHz to 118, so NAV1/2 stay on
+    `/api/radio` and `/api/control`.
+- **Checklist** (`RbSim.Core.Rb01Checklist`). `GET` and `POST /checklist/default/status`
+  work as on the daemon (`checklist.go`). The list comes from a file (`checklist` in the
+  configuration, or `--checklist PATH`) in the format of RB-01's
+  `/boot/firmware/checklist/default.json`. It is kept in memory and replaced whole by each
+  post. Differences from the daemon:
+  - a post that isn't a list of groups, each with an `items` list of objects, gets 400 and
+    stores nothing. One over 1 MiB gets 413, and a foreign origin gets 403;
+  - `DELETE` restores the file's list, for the next student. The daemon's is a TODO;
+  - a bad file is a startup error (exit 2).
+
+  The ticks are never written to disk or uploaded (RPL-110).
+  `wrapper-cs/checklist.example.json` is a generic example, marked NOT FOR FLIGHT.
+- **Tail number.**
+  - The user aircraft's `ATC ID` joins `TITLE` in the aircraft request, which was the title
+    request (on change, 1 s), and becomes `SimInfo.Tail`.
+  - `GET /settings/aircraft.json` returns `wwwroot`'s profile with `name` set to it, and the
+    aircraft plate shows the name. Without a tail number the profile keeps its own name.
+  - `/api/status` shows it as `sim.tail`. The synthetic source's is the placeholder `X-SYNT`.
+  - The HMI reads the profile once, when it loads.
+  - **Not added to RB-SIM-IF's `sim` group.** That would be a contract change (rule 5).
+    A real RB-01 hub would need it to name the aircraft after the sim's: propose it with
+    T3.1.
+- **Found in roastbeef, not changed (rule 3).** The radio plate's `increaseFreq`
+  (`web/RB-01/plates/js/radio.js`) pads the kHz part on the right (`padEnd(3, "0")`):
+  - ▲ MHz from 122.025 gives 123.250. Seen in headless Chrome against the wrapper: the sim
+    was set to 123.250;
+  - ▲ kHz from 118.000 gives 118.500;
+  - ▼ kHz from 118.000 gives `118.-50`.
+
+  The fix is `padStart(3, "0")`, with a carry into the MHz. The wrapper writes what the plate
+  posts. It refuses `118.-50` with 400 and re-sends the sim's list, so the plate does not
+  keep the bad value.
+- New requirements RB-SIM-HMI-070, HMI-080 and HMI-090. HMI-050 no longer lists `/radio`.
+- **Verified on the Linux dev box** (2026-10-30, .NET SDK 10.0.403):
+  - **Checks.** 196 unit tests pass (38 new), and `dotnet format --verify-no-changes` is
+    clean.
+  - **Endpoints.** On the synthetic source, 28 end-to-end checks of the new endpoints
+    pass, over HTTP and WebSocket. They are the smoke test's new section, run from Python.
+  - **The real HMI** (roastbeef `web/RB-01` working tree of the day), in headless Chrome:
+    - the radio plate shows the sim's COM1/COM2, with COM1 ACTIVE;
+    - SWITCH FREQ. swaps the frequencies in the sim;
+    - a frequency changed on the sim side shows on the open plate without a reload;
+    - DUAL ON comes back to OFF;
+    - the aircraft plate shows `X-SYNT`, with RADIO COM1;
+    - the checklist plate shows the file, and a tick is stored with its time and survives
+      re-opening the plate;
+    - no console errors.
+- **Not verified:**
+  - on MSFS (L1): `COM TRANSMIT:n` and the user aircraft's `ATC ID`;
+  - whether MSFS reports an 8.33 kHz channel by its name or by its frequency (118.010 or
+    118.0083 MHz). By its frequency, a plate set of 118.010 ends in `mismatch` under the
+    1 kHz tolerance; this is an existing L1 item of the control API;
+  - the changed `ci/smoke.ps1`: there is no PowerShell on this box. The same checks ran in
+    Python;
+  - the Windows build.
+
 ### D25 — Autopilot guidance sentences from the sim GPS, for RB-01's path and HSI (proposed, 2026-10-29)
 - **Request** (maintainer): support the autopilot guidance NMEA sentences, so that RB-01
   draws the path and the HSI.
